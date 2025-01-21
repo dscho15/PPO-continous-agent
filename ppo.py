@@ -14,7 +14,7 @@ class PPO:
         
         self.env = env
         self.observation_space = self.env.observation_space.shape[0]
-        self.action_space = self.env.action_space.n
+        self.action_space = self.env.action_space.shape[0]
         
         # Actor and Critic networks
         self.actor = LinearAgent(self.observation_space, self.action_space, hidden_layer_dims, p_dropout)
@@ -27,6 +27,14 @@ class PPO:
         # Initialize covariance matrix used to query the actor for actions
         self.cov_var = torch.full(size=(self.action_space,), fill_value=0.5)
         self.cov_matrix = torch.diag(self.cov_var)
+        
+        self._init_hyperparameters()
+        
+    def _init_hyperparameters(self):
+        
+        # Default values for hyperparameters, will need to change later.
+        self.timesteps_per_batch = 4800            # timesteps per batch
+        self.max_timesteps_per_episode = 1600      # timesteps per episode
     
     
     def action(self, state):
@@ -47,43 +55,57 @@ class PPO:
         # Calculate the log probability for that action
         log_prob = dist.log_prob(action)
                 
-        return action.detach(), log_prob.detach()
+        return action.detach().numpy(), log_prob.detach()
         
     def rollout(self):
         
-        # make some empty lists for logging
-        batch_obs: list = []            # for observations
-        batch_acts: list = []           # for actions
+        # Make some empty lists for logging
+        batch_observations: list = []            # for observations
+        batch_actions: list = []           # for actions
         batch_weights: list = []        # for importance sampling weights
         batch_returns: list = []        # for measuring episode returns
         batch_lens: list = []           # for measuring episode lengths
         
-        # while True:
-            
-        state, info = env.reset()
-        done = False
+        t = 0
         
-        while not done:
+        while t < self.timesteps_per_batch:
             
-            # sample from a normal distribution
-            action, log_prob = self.action(state)
+            state, _ = self.env.reset()
+            done = False
             
-            print(self.env.step)
-            print(action.shape)
+            episode_rewards = []
+            episode_length = 0
             
-            # take a step in the environment
-            next_state, reward, terminated, truncated, info = self.env.step(action.tolist())
-            
-            # doesnt matter which one is true
-            done = terminated | truncated
-            
-            # 
-            batch_obs.append(state)
-            batch_acts.append(action)
-
-            state = next_state
+            # Remaining time in the batch
+            for ep_t in range(self.max_timesteps_per_episode):
                 
-        env.close()
+                # Tick / Tock
+                t += 1
+                
+                # Sample from a normal distribution
+                action, log_prob = self.action(state)
+                                
+                # Take a step in the environment
+                next_state, reward, terminated, truncated, info = self.env.step(action)
+                
+                # Doesn't matter which one is true
+                done = terminated or truncated
+                
+                # Log observations, actions, and rewards
+                batch_observations.append(state)
+                batch_actions.append(action)
+                episode_rewards.append(reward)
+                
+                if t == self.timesteps_per_batch or done:
+                    break
+                
+                state = next_state
+                episode_length += 1
+
+        self.env.close()
+        
+        return batch_observations, batch_actions, batch_weights, batch_returns, batch_lens
+
         
         
     
@@ -96,7 +118,7 @@ class PPO:
         
 if __name__ == "__main__":
     
-    env = gym.make("LunarLander-v3")
+    env = gym.make("LunarLander-v3", continuous=True)
     
     ppo = PPO(env=env)
     
