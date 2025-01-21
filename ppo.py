@@ -88,15 +88,12 @@ class PPO:
                 # Take a step in the environment
                 next_state, reward, terminated, truncated, info = self.env.step(action)
                 
-                # Doesn't matter which one is true
-                done = terminated or truncated
-                
                 # Log observations, actions, and rewards
                 batch_observations.append(state)
                 batch_actions.append(action)
                 episode_rewards.append(reward)
                 
-                if t == self.timesteps_per_batch or done:
+                if t == self.timesteps_per_batch or terminated or truncated:
                     break
                 
                 state = next_state
