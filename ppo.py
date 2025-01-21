@@ -60,27 +60,35 @@ class PPO:
     def rollout(self):
         
         # Make some empty lists for logging
-        batch_observations: list = []            # for observations
-        batch_actions: list = []           # for actions
-        batch_weights: list = []        # for importance sampling weights
-        batch_returns: list = []        # for measuring episode returns
-        batch_lens: list = []           # for measuring episode lengths
-        
+        batch_observations: list = []                # for observations
+        batch_actions: list = []                     # for actions
+        batch_log_probs: list = []                   # log probabilities
+        batch_weights: list = []                     # for importance sampling weights
+        batch_returns: list = []                     # for measuring episode returns
+        batch_lens: list = []                        # for measuring episode lengths
+
+
+        # Episodic data, keeps tracck of rewards per episode
         t = 0
         
         while t < self.timesteps_per_batch:
             
-            state, _ = self.env.reset()
-            done = False
+            observation, _ = self.env.reset()
+            done: bool = False
             
-            episode_rewards = []
-            episode_length = 0
+            episodic_rewards: list = []
+            episodic_length: int = 0
             
             # Remaining time in the batch
             for ep_t in range(self.max_timesteps_per_episode):
+
+                if self.render:
+                    env.render()
                 
                 # Tick / Tock
                 t += 1
+
+                batch_observations.append(observation)
                 
                 # Sample from a normal distribution
                 action, log_prob = self.action(state)
@@ -89,15 +97,18 @@ class PPO:
                 next_state, reward, terminated, truncated, info = self.env.step(action)
                 
                 # Log observations, actions, and rewards
-                batch_observations.append(state)
                 batch_actions.append(action)
                 episode_rewards.append(reward)
+                batch_log_probs.append(log_prob)
                 
                 if t == self.timesteps_per_batch or terminated or truncated:
                     break
                 
                 state = next_state
                 episode_length += 1
+
+            batch_lens.append(ep_t + 1)
+            batch
 
         self.env.close()
         
