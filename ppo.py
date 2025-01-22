@@ -30,17 +30,13 @@ class PPO:
         self.cov_var = torch.full(size=(self.action_space,), fill_value=0.5)
         self.cov_matrix = torch.diag(self.cov_var)
         
-        self._init_hyperparameters()
-        
-    def _init_hyperparameters(self):
-        
         # Default values for hyperparameters, will need to change later.
-        self.timesteps_per_batch = 4800            # timesteps per batch
-        self.max_timesteps_per_episode = 1600      # timesteps per episode
+        self.timesteps_per_batch = 250            # timesteps per batch
+        self.max_timesteps_per_episode = 250      # timesteps per episode
         self.gamma = 0.99                          # discount factor
+        self.n_epochs = 1                       # number of epochs
     
-    
-    def action(self, state):
+    def get_action(self, state):
         state = torch.tensor(state, dtype=torch.float32)
         
         # Mean of the Gaussian distribution
@@ -80,13 +76,11 @@ class PPO:
         for rewards in batch_rewards:
 
             cum_return_list: list[float] = []
-            
             cum_sum = 0
             
             for i, reward in enumerate(rewards.flip(0)):
                 
                 cum_sum = reward + gamma * cum_sum
-                
                 cum_return_list.append(cum_sum)
 
             cum_returns.append(torch.tensor(list(cum_return_list), dtype=torch.float32).flip(0))
@@ -100,7 +94,6 @@ class PPO:
         batch_observations: list = []                # for observations
         batch_actions: list = []                     # for actions
         batch_log_probs: list = []                   # log probabilities
-        batch_weights: list = []                     # for importance sampling weights
         batch_returns: list = []                     # for measuring episode returns
         batch_lens: list = []                        # for measuring episode lengths
 
@@ -116,7 +109,7 @@ class PPO:
             episodic_length: int = 0
             
             # Remaining time in the batch
-            for ep_t in tqdm(range(self.max_timesteps_per_episode)):
+            for ep_t in range(self.max_timesteps_per_episode):
                 
                 # Tick / Tock
                 t += 1
@@ -127,7 +120,7 @@ class PPO:
                 batch_observations.append(state)
                 
                 # Sample from a normal distribution
-                action, log_prob = self.action(state)
+                action, log_prob = self.get_action(state)
                                 
                 # Take a step in the environment
                 next_state, reward, terminated, truncated, info = self.env.step(action)
@@ -145,45 +138,106 @@ class PPO:
                 
             batch_lens.append(ep_t + 1)
             batch_returns.append(torch.tensor(episodic_rewards, dtype=torch.float32))
+            
+        batch_observations = torch.tensor(batch_observations, dtype=torch.float32)
+        batch_actions = torch.tensor(batch_actions, dtype=torch.float32)
+        batch_log_probs = torch.tensor(batch_log_probs, dtype=torch.float32)
+        
+        batch_discounted_returns = self.get_discounted_return(batch_returns, self.gamma)
+        batch_discounted_returns = torch.tensor(batch_discounted_returns, dtype=torch.float32)
+        print(batch_discounted_returns.shape)
 
         self.env.close()
         
-        return batch_observations, batch_actions, batch_weights, batch_returns, batch_lens
+        return batch_observations, batch_actions, batch_log_probs, batch_discounted_returns, batch_lens
     
-    
-    def learn(self):
+    def compute_advantage(self, batch_returns, batch_values):
+        """
+        Compute advantage using discounted returns and the value function.
+        Advantage A(s, a) = R(s, a) - V(s).
+        """
+        batch_advantages = []
         
-        
-        
-        pass
-
-
-def get_discounted_return(batch_rewards: list[torch.FloatTensor], gamma: float = 0.9):
-    
-    cum_returns: list[torch.FloatTensor] = []
-
-    for rewards in batch_rewards:
-
-        cum_return_list: list[float] = []
-        
-        cum_sum = 0
-        
-        for i, reward in enumerate(rewards.flip(0)):
+        for returns, values in zip(batch_returns, batch_values):
             
-            cum_sum = reward + gamma * cum_sum
+            advantages = returns - values
             
-            cum_return_list.append(cum_sum)
+            batch_advantages.append(advantages)
+            
+        return batch_advantages
+    
+    def update_policy(self, observations, actions, log_probs, advantages):
+        """
+        Update the policy network using the PPO clipped objective.
+        """
+        observations = torch.stack(observations)
+        actions = torch.stack(actions)
+        old_log_probs = torch.stack(log_probs)
+        advantages = torch.stack(advantages)
+        
+        # Normalize advantages
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        cum_returns.append(torch.tensor(list(cum_return_list), dtype=torch.float32).flip(0))
-                
-    return cum_returns
+        for _ in range(self.n_epochs):
+            
+            # Compute new log probabilities and the ratio
+            mean = self.actor(observations)
+            dist = torch.distributions.MultivariateNormal(mean, self.cov_matrix)
+            new_log_probs = dist.log_prob(actions)
+            ratio = torch.exp(new_log_probs - old_log_probs)
+
+            # PPO clipped objective
+            surrogate1 = ratio * advantages
+            surrogate2 = torch.clamp(ratio, 1 - 0.2, 1 + 0.2) * advantages
+            loss_actor = -torch.min(surrogate1, surrogate2).mean()
+
+            # Update actor
+            self.actor_optimizer.zero_grad()
+            loss_actor.backward()
+            self.actor_optimizer.step()
+            
+    def update_value_function(self, observations, returns):
+        """
+        Update the value function using the MSE loss.
+        """
+        observations = torch.stack(observations)
+        returns = torch.stack(returns)
+
+        for _ in range(self.n_epochs):
+            values = self.critic(observations).squeeze()
+            loss_critic = torch.nn.functional.mse_loss(values, returns)
+
+            # Update critic
+            self.critic_optimizer.zero_grad()
+            loss_critic.backward()
+            self.critic_optimizer.step()
+    
+    def train(self):
+        
+        for epoch in tqdm(range(self.n_epochs), desc="Training"):
+        
+            # 1) Collect trajectories
+            batch_obs, batch_actions, batch_log_probs, batch_returns, batch_lens = self.rollout()
+            
+            # 2) Compute value estimates and advantages
+            batch_values = self.critic(batch_obs).squeeze()
+            
+            
+            
+            advantages = self.compute_advantage(batch_returns, batch_values)
+            print(advantages)
+                        
+            # # 3) Update actor and critic
+            # self.update_policy(batch_obs_torch, batch_actions, batch_log_probs, advantages)
+            # self.update_value_function(batch_obs_torch, discounted_returns)
+            
+            
     
 env = gym.make("LunarLander-v3", continuous=True)
 
 ppo = PPO(env=env)
-    
-batch_observations, batch_actions, batch_weights, batch_returns, batch_lens = ppo.rollout()
 
-discounted_return = get_discounted_return(batch_returns)
+ppo.train()
 
-discounted_return
+# The actor optimizes the policy using the advantage to decide how to adjust the probabilities of actions
+# The critic optimizes the value function using the discounted returns as the target
