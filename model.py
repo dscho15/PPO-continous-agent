@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 
-class LinearAgent(torch.nn.Module):
+class ShallowMLP(torch.nn.Module):
     
     def __init__(self,
                  input_dim: int,
@@ -10,7 +10,7 @@ class LinearAgent(torch.nn.Module):
                  hidden_layer_dims: list = [32, 64, 32],
                  p_dropout: float = 0.2):
         
-        super(LinearAgent, self).__init__()
+        super(ShallowMLP, self).__init__()
         
         self.fci = nn.Linear(input_dim, hidden_layer_dims[0])
         
@@ -19,7 +19,7 @@ class LinearAgent(torch.nn.Module):
         for i in range(len(hidden_layer_dims) - 1):
             setattr(self, f'fc{i+2}', 
             torch.nn.Sequential(nn.Linear(hidden_layer_dims[i], hidden_layer_dims[i+1]), 
-                                nn.ReLU(),
+                                nn.Tanh(),
                                 nn.Dropout(p_dropout),
                                 nn.LayerNorm(hidden_layer_dims[i+1])))
         
@@ -39,7 +39,7 @@ class LinearAgent(torch.nn.Module):
 
 if __name__ == "__main__":
     
-    model = LinearAgent(4, 2, [32, 64, 32])
+    model = ShallowMLP(4, 2, [32, 64, 32])
     
     print(model)
     print(model(torch.rand(1, 4)))
