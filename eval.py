@@ -1,11 +1,9 @@
-from ppo import PPO
+from ppo import Actor, Critic, PPO
 import torch
 import numpy as np
 import random
 
 import gymnasium as gym
-
-from model import ShallowMLP
 
 torch.manual_seed(42)
 np.random.seed(42)
