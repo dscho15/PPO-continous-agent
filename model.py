@@ -5,7 +5,9 @@ from torch.distributions import normal
 
 class Actor(nn.Module):
 
-    def __init__(self, n_states, n_actions):
+    def __init__(self, 
+                 n_states, 
+                 n_actions):
 
         super(Actor, self).__init__()
         self.n_states = n_states

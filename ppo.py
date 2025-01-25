@@ -24,6 +24,16 @@ class PPO:
         nf_rewards: float = 1,
         clip_critic_grads: float = 0.5,
         clip_actor_grads: float = 0.5,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        n_epochs: int = 10,
+        n_trajectories: int = 1000,
+        timesteps_per_batch: int = 2500,
+        max_timesteps_per_episode: int = 1000,
+        clip_eps: float = 0.2,
+        batch_size: int = 64,
+        do_clip_reward: bool = False,
+        clip_reward_range: tuple[float, float] = (-10, 10),
     ):
 
         self.env = env
@@ -41,17 +51,21 @@ class PPO:
         )
 
         # Default values for hyperparameters, will need to change later.
-        self.timesteps_per_batch = 2500  # timesteps per batch
-        self.max_timesteps_per_episode = 1000  # timesteps per episode
-        self.gamma = 0.99  # discount factor
-        self.lam = 0.95
-        self.n_epochs = 10  # number of epochs
-        self.n_trajectories = 1000
-        self.clip_eps = 0.2  # PPO clipping parameter
-        self.batch_size = 64
-        self.nf_rewards = nf_rewards
-        self.clip_critic_grads = clip_critic_grads
+        self.batch_size = batch_size
         self.clip_actor_grads = clip_actor_grads
+        self.clip_critic_grads = clip_critic_grads
+        self.clip_eps = clip_eps
+        
+        self.clip_reward_range = clip_reward_range
+        self.do_clip_reward = do_clip_reward
+
+        self.gamma = gamma
+        self.gae_lambda = gae_lambda
+        self.max_timesteps_per_episode = max_timesteps_per_episode
+        self.n_epochs = n_epochs
+        self.n_trajectories = n_trajectories
+        self.nf_rewards = nf_rewards
+        self.timesteps_per_batch = timesteps_per_batch
 
         self.critic_loss = torch.nn.L1Loss()
 
@@ -80,7 +94,7 @@ class PPO:
 
             for t in reversed(range(len(rewards))):
                 delta = (rewards[t] + self.gamma * values[t + 1] - values[t]).item()
-                advantages[t] = delta + self.gamma * self.lam * last_adv
+                advantages[t] = delta + self.gamma * self.gae_lambda * last_adv
                 last_adv = advantages[t]
 
             batch_advantages[episode_idx] = advantages
@@ -96,22 +110,15 @@ class PPO:
         torch.FloatTensor,
         list[int],
     ]:
-        b_observations = []  # for observations
-        b_actions = []  # for actions
-        b_log_probs = []  # log probabilities
-        batch_rewards = []  # for measuring episode returns
-        b_values = []  # for measuring values
+        b_observations, b_actions, b_log_probs, b_rewards, b_values = [], [], [], [], []
 
         # Episodic data, keeps track of rewards per episode
         t: int = 0
-
         cum_rewards = []
 
         while t < self.timesteps_per_batch:
             current_observation = self.reset_env()
-
-            episodic_rewards = []
-            episodic_values = []
+            episodic_rewards, episodic_values = [], []
 
             # Remaining time in the batch
             for _ in range(self.max_timesteps_per_episode):
@@ -136,8 +143,9 @@ class PPO:
                 action = action.flatten()
                 next_observation, reward, term, trunc, _ = self.env.step(action.numpy())
 
-                # # Reward clipping
-                # reward = max(min(reward, 10), -10)
+                # Reward clipping
+                if self.do_clip_reward:
+                    reward = max(min(reward, self.clip_reward_range[1]), self.clip_reward_range[0])
 
                 # Store the episodic rewards
                 episodic_rewards.append(reward)
@@ -151,27 +159,20 @@ class PPO:
                 if term or trunc or t >= self.timesteps_per_batch:
                     break
 
-            batch_rewards.append(torch.tensor(episodic_rewards, dtype=torch.float32))
+            b_rewards.append(torch.tensor(episodic_rewards, dtype=torch.float32))
             cum_rewards.append(sum(episodic_rewards))
             b_values.append(torch.tensor(episodic_values, dtype=torch.float32).flatten())
 
-        print(f"Episode {len(batch_rewards)}: {np.mean(cum_rewards)}")
-
-        # Convert lists to tensors
-        b_observations = torch.tensor(b_observations, dtype=torch.float32)
-        b_actions = torch.stack(b_actions)
-        b_log_probs = torch.stack(b_log_probs)
-        b_advantages = torch.cat(self.get_gae_return(batch_rewards, b_values))
-        b_values = torch.cat(b_values)
+        print(f"Episode {len(b_rewards)}: {np.mean(cum_rewards)}")
 
         self.env.close()
 
         return (
-            b_observations,
-            b_actions,
-            b_log_probs,
-            b_advantages,
-            b_values,
+            torch.tensor(b_observations, dtype=torch.float32),
+            torch.stack(b_actions),
+            torch.stack(b_log_probs),
+            torch.cat(self.get_gae_return(b_rewards, b_values)),
+            torch.cat(b_values),
         )
 
     def create_dataloader(
@@ -278,32 +279,20 @@ class PPO:
             print("------------------------------------------------------------")
 
     def test(self, save_path: str):
-
-        obs = self.reset_env(0)
-
         os.makedirs(save_path, exist_ok=True)
 
+        observation = self.reset_env(0)
         frames = []
-        rewards = []
 
         for i in range(self.max_timesteps_per_episode):
-
-            obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-
+            observation = torch.tensor(observation, dtype=torch.float32).unsqueeze(0)
             with torch.inference_mode():
-
-                dist = self.actor(obs)
+                dist = self.actor(observation)
                 action = dist.mean
-
             action = action.detach().numpy()
-
-            obs, reward, term, trunc, _ = self.env.step(action.flatten())
-
+            observation, _, term, trunc, _ = self.env.step(action.flatten())
             rgb_values = self.env.render()
-
             frame = Image.fromarray(rgb_values)
-
-            rewards.append(reward)
             frames.append(frame)
 
             if term | trunc:
