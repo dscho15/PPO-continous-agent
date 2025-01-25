@@ -16,16 +16,22 @@ class Actor(nn.Module):
         self.fc2 = nn.Linear(in_features=64, out_features=64)
         self.mu = nn.Linear(in_features=64, out_features=self.n_actions)
 
+        # Orthogonal initialization
+
+        for layer in [self.fc1, self.fc2, self.mu]:
+            nn.init.orthogonal_(layer.weight, gain=0.01)
+            nn.init.constant_(layer.bias, 0)
+
         self.log_std = nn.Parameter(torch.zeros(1, self.n_actions))
 
     def forward(self, inputs):
-        x = inputs / torch.tensor([2.5, 2.5, 10, 10, 6.2831855, 10, 0.5, 0.5])
+        x = inputs
+
         x = torch.tanh(self.fc1(x))
         x = torch.tanh(self.fc2(x))
-        mu = self.mu(x)
 
-        std = self.log_std.exp()
-        dist = normal.Normal(mu, std)
+        mu = self.mu(x)
+        dist = normal.Normal(mu, self.log_std.exp())
 
         return dist
 
@@ -41,8 +47,13 @@ class Critic(nn.Module):
         self.fc2 = nn.Linear(in_features=64, out_features=64)
         self.value = nn.Linear(in_features=64, out_features=1)
 
+        # Orthogonal initialization
+        for layer in [self.fc1, self.fc2, self.value]:
+            nn.init.orthogonal_(layer.weight, gain=0.01)
+            nn.init.constant_(layer.bias, 0)
+
     def forward(self, inputs):
-        x = inputs / torch.tensor([2.5, 2.5, 10, 10, 6.2831855, 10, 0.5, 0.5])
+        x = inputs
         x = torch.tanh(self.fc1(x))
         x = torch.tanh(self.fc2(x))
         value = self.value(x)

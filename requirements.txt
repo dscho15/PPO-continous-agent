@@ -3,3 +3,4 @@ gymnasium[box2d]
 torch 
 torchvision 
 torchaudio
+tqdm

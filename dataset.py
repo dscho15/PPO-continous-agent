@@ -9,12 +9,14 @@ class Dataset(torch.utils.data.Dataset):
         log_probs: list[torch.FloatTensor],
         values: list[torch.FloatTensor],
         advantages: list[torch.FloatTensor],
+        gt_critics: list[torch.FloatTensor],
     ):
         self.observations = observations
         self.actions = actions
         self.log_probs = log_probs
         self.values = values
         self.advantages = advantages
+        self.gt_critics = gt_critics
 
     def __len__(self):
         return len(self.observations)
@@ -26,4 +28,5 @@ class Dataset(torch.utils.data.Dataset):
             self.log_probs[idx],
             self.values[idx],
             self.advantages[idx],
+            self.gt_critics[idx],
         )
