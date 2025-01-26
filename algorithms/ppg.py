@@ -71,7 +71,8 @@ class PPG(object):
         clip_actor_grads: float = 0.5,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
-        n_epochs: int = 10,
+        n_policy_epochs: int = 10,
+        n_critic_epochs: int = 10,
         n_trajectories: int = 1000,
         timesteps_per_batch: int = 2500,
         max_timesteps_per_episode: int = 1000,
@@ -106,7 +107,8 @@ class PPG(object):
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.max_timesteps_per_episode = max_timesteps_per_episode
-        self.n_epochs = n_epochs
+        self.n_policy_epochs = n_policy_epochs
+        self.n_critic_epochs = n_critic_epochs
         self.n_trajectories = n_trajectories
         self.nf_rewards = nf_rewards
         self.timesteps_per_batch = timesteps_per_batch
@@ -244,7 +246,7 @@ class PPG(object):
 
             dataloader = self.create_dataloader(episodes, advantages)
 
-            for epoch in range(self.n_epochs):
+            for policy_epoch in range(self.n_policy_epochs):
 
                 for batch in dataloader:
 
@@ -262,12 +264,12 @@ class PPG(object):
                     if advantages.shape != (self.batch_size, 1):
                         advantages = advantages.unsqueeze(1)
 
+                    self.actor_optimizer.zero_grad()
+
                     dist = self.actor(observations)
                     log_probs = dist.log_prob(actions)
 
                     ratio = (log_probs - action_log_probs).exp()
-
-                    self.actor_optimizer.zero_grad()
 
                     surrogate_1 = ratio * advantages
                     surrogate_2 = (
@@ -280,10 +282,44 @@ class PPG(object):
 
                     actor_loss = actor_clip - self.beta * actor_entropy
 
+                    actor_loss.backward()
+
                     torch.nn.utils.clip_grad_norm_(
                         self.actor.parameters(), self.clip_actor_grads
                     )
-                    actor_loss.backward()
+
+                    self.actor_optimizer.step()
+            
+            for critic_epoch in range(self.n_critic_epochs):
+
+                for batch in dataloader:
+
+                    (
+                        observations,
+                        actions,
+                        action_log_probs,
+                        rewards,
+                        dones,
+                        values,
+                        advantages,
+                        gt_critic_values,
+                    ) = batch
+
+                    self.critic_optimizer.zero_grad()
+
+                    critic_values = self.critic(observations)
+
+                    gt_critic_values = gt_critic_values.view_as(critic_values)
+
+                    critic_loss = self.critic_loss(critic_values, gt_critic_values).mean()
+
+                    critic_loss.backward()
+
+                    torch.nn.utils.clip_grad_norm_(
+                        self.critic.parameters(), self.clip_critic_grads
+                    )
+
+                    self.critic_optimizer.step()
 
 
 if __name__ == "__main__":
