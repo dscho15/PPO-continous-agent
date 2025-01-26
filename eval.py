@@ -1,4 +1,4 @@
-from ppo import Actor, Critic, PPO
+from algorithms.ppo import Actor, Critic, PPO
 import torch
 import numpy as np
 import random

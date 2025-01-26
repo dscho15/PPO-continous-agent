@@ -55,7 +55,7 @@ class PPO:
         self.clip_actor_grads = clip_actor_grads
         self.clip_critic_grads = clip_critic_grads
         self.clip_eps = clip_eps
-        
+
         self.clip_reward_range = clip_reward_range
         self.do_clip_reward = do_clip_reward
 
@@ -88,7 +88,9 @@ class PPO:
 
         for episode_idx in range(len(batch_advantages)):
             rewards = batch_rewards[episode_idx]
-            values = torch.cat([batch_values[episode_idx], torch.tensor([0], dtype=torch.float32)])  # Add terminal value
+            values = torch.cat(
+                [batch_values[episode_idx], torch.tensor([0], dtype=torch.float32)]
+            )  # Add terminal value
             advantages = torch.zeros(len(rewards), dtype=torch.float32)
             last_adv = 0
 
@@ -145,7 +147,10 @@ class PPO:
 
                 # Reward clipping
                 if self.do_clip_reward:
-                    reward = max(min(reward, self.clip_reward_range[1]), self.clip_reward_range[0])
+                    reward = max(
+                        min(reward, self.clip_reward_range[1]),
+                        self.clip_reward_range[0],
+                    )
 
                 # Store the episodic rewards
                 episodic_rewards.append(reward)
@@ -161,7 +166,9 @@ class PPO:
 
             b_rewards.append(torch.tensor(episodic_rewards, dtype=torch.float32))
             cum_rewards.append(sum(episodic_rewards))
-            b_values.append(torch.tensor(episodic_values, dtype=torch.float32).flatten())
+            b_values.append(
+                torch.tensor(episodic_values, dtype=torch.float32).flatten()
+            )
 
         print(f"Episode {len(b_rewards)}: {np.mean(cum_rewards)}")
 
@@ -185,12 +192,7 @@ class PPO:
         b_gt_critic: torch.FloatTensor,
     ) -> Dataset:
         data = Dataset(
-            b_observations,
-            b_actions,
-            b_log_probs,
-            b_values,
-            b_advantage,
-            b_gt_critic
+            b_observations, b_actions, b_log_probs, b_values, b_advantage, b_gt_critic
         )
         return torch.utils.data.DataLoader(
             data, batch_size=self.batch_size, shuffle=True, drop_last=True
@@ -227,7 +229,7 @@ class PPO:
                     b_log_probs,
                     b_values,
                     b_normalized_advantage,
-                    b_gt_critic
+                    b_gt_critic,
                 )
 
                 for (
@@ -236,7 +238,7 @@ class PPO:
                     old_log_probs,
                     values,
                     n_adv,
-                    gt_critic
+                    gt_critic,
                 ) in dataloader:
 
                     # Compute log probabilities
@@ -250,12 +252,19 @@ class PPO:
                     # PPO clipped objective
                     ratios = torch.exp(new_log_probs - old_log_probs)
                     surr1 = ratios * n_adv
-                    surr2 = (torch.clamp(ratios, 1 - self.clip_eps, 1 + self.clip_eps) * n_adv)
-                    loss_actor = (-torch.min(surr1, surr2)).mean() - 0.01 * dist.entropy().mean() # probably include a beta scheduler
+                    surr2 = (
+                        torch.clamp(ratios, 1 - self.clip_eps, 1 + self.clip_eps)
+                        * n_adv
+                    )
+                    loss_actor = (
+                        -torch.min(surr1, surr2)
+                    ).mean() - 0.01 * dist.entropy().mean()  # probably include a beta scheduler
 
                     # Update actor
                     loss_actor.backward()
-                    torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=self.clip_actor_grads)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.actor.parameters(), max_norm=self.clip_actor_grads
+                    )
                     loss_policy_list.append(loss_actor.item())
                     self.actor_optimizer.step()
 
@@ -263,17 +272,21 @@ class PPO:
                     self.critic_optimizer.zero_grad()
                     pred_values = self.critic(observations).squeeze(-1)
 
-                    # loss critic 
+                    # loss critic
                     loss_critic = self.critic_loss(pred_values, gt_critic)
 
                     # Update critic
                     loss_critic.backward()
-                    torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=self.clip_critic_grads)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.critic.parameters(), max_norm=self.clip_critic_grads
+                    )
                     loss_critic_list.append(loss_critic.item())
                     self.critic_optimizer.step()
 
             print("------------------------------------------------------------")
-            print(f"Actor Loss: {np.mean(loss_policy_list)}\nCritic Loss: {np.mean(loss_critic_list)}")
+            print(
+                f"Actor Loss: {np.mean(loss_policy_list)}\nCritic Loss: {np.mean(loss_critic_list)}"
+            )
             print("Standard deviation of rewards: ", torch.std(b_advantages).item())
             print("Actor std: ", self.actor.log_std.exp())
             print("------------------------------------------------------------")
