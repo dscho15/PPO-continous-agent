@@ -289,7 +289,7 @@ class PPG(object):
                     )
 
                     self.actor_optimizer.step()
-            
+
             for critic_epoch in range(self.n_critic_epochs):
 
                 for batch in dataloader:
@@ -311,7 +311,9 @@ class PPG(object):
 
                     gt_critic_values = gt_critic_values.view_as(critic_values)
 
-                    critic_loss = self.critic_loss(critic_values, gt_critic_values).mean()
+                    critic_loss = self.critic_loss(
+                        critic_values, gt_critic_values
+                    ).mean()
 
                     critic_loss.backward()
 
@@ -320,6 +322,8 @@ class PPG(object):
                     )
 
                     self.critic_optimizer.step()
+
+            ...
 
 
 if __name__ == "__main__":
