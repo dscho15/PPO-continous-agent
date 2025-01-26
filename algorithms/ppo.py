@@ -7,7 +7,7 @@ import random
 import io
 
 from tqdm import tqdm
-from dataset import Dataset
+from algorithms.dataset import Dataset
 from PIL import Image
 
 import numpy as np
