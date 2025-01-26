@@ -57,7 +57,7 @@ class SimBaLayer(nn.Module):
         super(SimBaLayer, self).__init__()
 
         self.model = nn.Sequential(
-            nn.LayerNorm(in_features, eps=eps),
+            nn.RMSNorm(in_features, eps=eps),
             nn.Linear(in_features, in_features * exp_factor),
             ReluSquared(),
             nn.Linear(in_features * exp_factor, in_features),
@@ -71,7 +71,7 @@ class SimBaLayer(nn.Module):
 class Actor(nn.Module):
 
     def __init__(
-        self, n_states: int, n_actions: int, n_layers: int = 6, h_dim: int = 64
+        self, n_states: int, n_actions: int, n_layers: int = 2, h_dim: int = 64
     ):
 
         super(Actor, self).__init__()
