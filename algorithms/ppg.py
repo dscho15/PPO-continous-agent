@@ -1,6 +1,6 @@
 from algorithms.models import Actor, Critic
 
-from algorithms.dataset import ExperienceDataset, Memory, create_dataloader
+from algorithms.dataset import ExperienceDataset, Memory, MemoryAux, ExperienceAuxDataset
 
 from algorithms.utils import (
     optimize_network,
@@ -30,6 +30,22 @@ from tqdm import tqdm
 import torch
 from einops import reduce, einsum
 
+def create_shuffled_dataloader(
+    episodes: list[list[Memory]] | list[MemoryAux],
+    batch_size: int,
+) -> torch.utils.data.DataLoader:
+    
+    if isinstance(episodes[0, 0], Memory):
+        dataset = ExperienceDataset(episodes)
+    else:
+        dataset = ExperienceAuxDataset(episodes)
+    
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True
+    )
 
 def tuple_to_tensors_and_device(
     batch: tuple[torch.FloatTensor], device
@@ -38,6 +54,9 @@ def tuple_to_tensors_and_device(
 
 def divisible_by(x: int, y: int) -> bool:
     return x % y == 0
+
+def normalize(x: torch.FloatTensor) -> torch.FloatTensor:
+    return (x - x.mean()) / (x.std() + 1e-8)
 
 
 class PPG(object):
@@ -139,7 +158,7 @@ class PPG(object):
         else:
             raise ValueError(f"Invalid mode: {mode}. Use 'train' or 'eval'.")
 
-    def learn(self, dataloader: torch.utils.data.DataLoader):
+    def learn(self, dataloader: torch.utils.data.DataLoader, episodes_aux: list[Memory]) -> tuple[list[float]]:
         
         actor_losses = []
         critic_losses = []
@@ -157,16 +176,16 @@ class PPG(object):
                     states,
                     actions,
                     old_actions_log_probs,
-                    reward,
-                    done,
+                    rewards,
+                    _,
                     old_values,
                     advantages,
                     returns,
                 ) = batch
 
+                advantages = normalize(advantages)
                 advantages = advantages.unsqueeze(1)                
                 
-                # Actor loss
                 dist, _ = self.actor(states)
                 new_actions_log_probs = dist.log_prob(actions)
                 
@@ -187,7 +206,6 @@ class PPG(object):
                     self.clip_actor_grads,
                 )
                 
-                # Critic loss
                 new_values = self.critic(states)
                 
                 loss = (
@@ -203,27 +221,53 @@ class PPG(object):
                 )
                 
                 c_loss.append(loss.item())
+                
+                self.episodes_aux.append(MemoryAux(states, returns, old_values))
 
             actor_losses.append(np.mean(a_loss))
             critic_losses.append(np.mean(c_loss))
 
         return actor_losses, critic_losses
+    
+    def learn_aux(self, episodes_aux: list[Memory]):
+                
+        for mem in episodes_aux:
+            
+            state, action, log_prob_action, reward, done, value = mem
+            
+            state = state.unsqueeze(0)
+            action = action.unsqueeze(0)
+            log_prob_action = log_prob_action.unsqueeze(0)
+            reward = reward.unsqueeze(0)
+            done = done.unsqueeze(0)
+            value = value.unsqueeze(0)
+            
+            advantages = get_gae_advantages(
+                reward,
+                done,
+                value,
+                self.gamma,
+                self.gae_lambda,
+            )
+            
+            returns = get_cum_returns
 
 
 def training_loop(
     gym: gym.Env,
     agent: PPG,
-    n_max_que_size: int = 50,
-    n_training_loops: int = 1000,
+    n_training_loops: int = 10000,
     n_max_number_of_steps: int = 1000,
     n_steps_before_update: int = 5000,
     seed: int = 42,
     batch_size: int = 64
 ):
-    episodes = deque(maxlen=n_max_que_size)
+    episodes = deque()
+    episodes_aux = deque()
     n_steps = 1
     
     loop_iterator = tqdm(range(n_training_loops), desc="Training Loop", position=0)
+    num_policy_updates = 0
 
     for i in loop_iterator:
 
@@ -238,40 +282,30 @@ def training_loop(
             
             dist, _ = agent.ema_actor.forward_eval(state)
             
-            a = dist.sample()
-            log_a = dist.log_prob(a)
+            action = dist.sample()
+            log_prob_action = dist.log_prob(action)
 
-            next_state, reward, terminated, truncated, _ = gym.step(
-                a.cpu().view(gym.action_space.shape).numpy()
-            )
+            np_action = action.cpu().view(gym.action_space.shape).numpy()
+            next_state, reward, terminated, truncated, _ = gym.step(np_action)
 
             n_steps += 1
 
             done = terminated | truncated
 
-            mem = Memory(state, a, log_a, reward, done, value)
+            mem = Memory(state, action, log_prob_action, reward, done, value)
             
             episode.append(mem)
 
             state = next_state
 
-            if divisible_by(n_steps, n_steps_before_update):
+            if divisible_by(n_steps, n_steps_before_update) and len(episodes) > 0:
 
-                episodes_popped = [episodes.pop() for _ in range(len(episodes))]
-                episodes_popped = [e for e in episodes_popped if len(e) > 0]
-
-                if len(episodes_popped) == 0:
-                    assert len(episodes) == 0, "Episodes should be empty"
-
-                advantages = [get_gae_advantages(e) for e in episodes_popped]
-
-                mean_disc_cum_rewards = torch.tensor(
-                    [torch.mean(get_cum_returns(e)) for e in episodes_popped]
-                ).mean()
-
-                dataloader = create_dataloader(episodes_popped, advantages, batch_size)
-
-                actor_losses, critic_losses = agent.learn(dataloader)
+                episodes_unwrapped = [e for e in episodes]
+                episodes.clear()
+                mean_disc_cum_rewards = [torch.mean(get_cum_returns(e)) for e in episodes_unwrapped]
+                mean_disc_cum_rewards = torch.tensor(mean_disc_cum_rewards).mean()
+                dataloader = create_shuffled_dataloader(episodes_unwrapped, batch_size)
+                actor_losses, critic_losses = agent.learn(dataloader, episodes_aux)
 
                 loop_iterator.set_postfix(
                     actor_loss=actor_losses[-1],
@@ -279,9 +313,17 @@ def training_loop(
                     exp_return=mean_disc_cum_rewards.item(),
                     n_steps=n_steps,
                 )
-
-                episodes = []
-
+                
+                num_policy_updates += 1
+                                    
+                if divisible_by(num_policy_updates, 1):
+                    
+                    create_shuffled_dataloader(episodes_aux, batch_size)
+                    
+                    agent.learn_aux(episodes_aux)
+                    
+                    episodes_aux.clear()
+                    
             if done:
                 break
 

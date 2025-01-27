@@ -1,6 +1,10 @@
 import torch
-from algorithms.dataset import Memory
 
+from collections import namedtuple
+
+Memory = namedtuple(
+    "Memory", ["state", "action", "action_log_prob", "reward", "done", "value"]
+)
 
 def optimize_network(
     loss: torch.FloatTensor,
@@ -20,13 +24,11 @@ def to_torch_tensor(x, device, dtype=torch.float32):
 
 
 def get_gae_advantages(
-    episode: list[Memory], gamma: float = 0.99, gae_lambda: float = 0.95
+    episodes: list[Memory], gamma: float = 0.99, gae_lambda: float = 0.95
 ) -> list[torch.FloatTensor]:
+    advantages = torch.zeros(len(episodes), dtype=torch.float32)
 
-    prev_advantage = 0
-    advantages = torch.zeros(len(episode), dtype=torch.float32)
-
-    episode.append(
+    episodes.append(
         Memory(
             state=None,
             action=None,
@@ -36,19 +38,16 @@ def get_gae_advantages(
             value=0,
         )
     )
-
+    
+    states, actions, action_log_probs, rewards, dones, values = zip(*episodes)
+    prev_advantage = 0
+    
     for t in reversed(range(len(advantages))):
-
-        reward = episode[t].reward
-        value_n = episode[t + 1].value
-        value_c = episode[t].value
-        done = episode[t].done
-
-        delta_t = (reward + gamma * (~done) * value_n - value_c).item()
+        delta_t = (rewards[t] + gamma * (~dones[t]) * values[t + 1] - values[t]).item()
         advantages[t] = delta_t + gamma * gae_lambda * prev_advantage
         prev_advantage = advantages[t]
 
-    episode.pop()
+    episodes.pop()
 
     return advantages
 

@@ -1,5 +1,7 @@
 import torch
+from torch.nn.functional import F
 
+from einops import einsum
 
 class ClipActorLoss(torch.nn.Module):
 
@@ -105,3 +107,30 @@ class SpectralEntropyLoss(torch.nn.Module):
         self.t += 1
 
         return self.beta * loss
+
+def simba_orthogonal_loss(
+    model: torch.nn.Module, simba_module: torch.nn.Module
+):
+    loss = torch.tensor(0.).requires_grad_()
+
+    for module in model.modules():
+        
+        if not isinstance(module, simba_module):
+            continue
+
+        weights = []
+
+        for layer in module.layers:
+            linear_in, linear_out = layer.branch[1], layer.branch[3]
+
+            weights.append(linear_in.weight.t())
+            weights.append(linear_out.weight)
+
+        for weight in weights:
+            norm_weight = F.normalize(weight, dim = -1)
+            cosine_dist = einsum(norm_weight, norm_weight, 'i d, j d -> i j')
+            eye = torch.eye(cosine_dist.shape[-1], device = cosine_dist.device, dtype = torch.bool)
+            orthogonal_loss = cosine_dist[~eye].mean()
+            loss = loss + orthogonal_loss
+    
+    return loss

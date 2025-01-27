@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from algorithms.utils import get_gae_advantages
 
 from collections import namedtuple
 
@@ -7,89 +8,57 @@ Memory = namedtuple(
     "Memory", ["state", "action", "action_log_prob", "reward", "done", "value"]
 )
 
+MemoryAux = namedtuple(
+    "MemoryAux", ["state", "returns", "action_log_prob"]
+)
 
-def create_dataloader(
-    episodes: list[list[Memory]],
-    advantages: list[torch.FloatTensor],
-    batch_size: int,
-) -> torch.utils.data.DataLoader:
-
-    dataset = ExperienceDataset(episodes, advantages)
-
-    return torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=True,
-        num_workers=0,
-    )
-
-
-class Dataset(torch.utils.data.Dataset):
+class ExperienceDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        states: list[torch.FloatTensor],
-        actions: list[torch.FloatTensor],
-        log_probs: list[torch.FloatTensor],
-        values: list[torch.FloatTensor],
-        advantages: list[torch.FloatTensor],
-        gt_critics: list[torch.FloatTensor],
+        episodes: list[list[Memory]]
     ):
-        self.states = states
-        self.actions = actions
-        self.log_probs = log_probs
-        self.values = values
-        self.advantages = advantages
-        self.gt_critics = gt_critics
+        self.advantages = []
+        self.episodes = []
+        for e in episodes:
+            self.advantages.extend(get_gae_advantages(e))
+            self.episodes.extend(e)
+            
+        (self.states, self.actions, self.actions_log_prob, self.rewards, self.done, self.values) = zip(*self.episodes)
+        
+        self.returns = [value + adv for value, adv in zip(self.values, self.advantages)]
 
     def __len__(self):
         return len(self.states)
 
     def __getitem__(self, idx):
         return (
-            self.states[idx],
-            self.actions[idx],
-            self.log_probs[idx],
+            self.states[idx].flatten(),
+            self.actions[idx].flatten(),
+            self.actions_log_prob[idx].flatten(),
+            self.rewards[idx],
+            self.done[idx],
             self.values[idx],
             self.advantages[idx],
-            self.gt_critics[idx],
+            self.returns[idx],
         )
-
-
-class ExperienceDataset(torch.utils.data.Dataset):
+        
+class ExperienceAuxDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        episodes: list[list[Memory]],
-        advantages: list[list[float]],
-        epsilon: float = 1e-8,
+        episodes_aux: list[MemoryAux]
     ):
-        self.episodes = []
-        for episode in episodes:
-            self.episodes.extend(episode)
-
-        self.advantages = []
-        for advantage in advantages:
-            self.advantages.extend(advantage)
-
-        self.returns = [
-            mem.value + adv for mem, adv in zip(self.episodes, self.advantages)
-        ]
-
-        self.norm_advantages = (self.advantages - np.mean(self.advantages)) / (
-            np.std(self.advantages) + epsilon
-        )
+        self.episodes_aux = episodes_aux
+        
+        (self.states, self.returns, self.actions_log_prob) = zip(*self.episodes_aux)
+        
+        
 
     def __len__(self):
-        return len(self.episodes)
+        return len(self.episodes_aux)
 
     def __getitem__(self, idx):
         return (
-            self.episodes[idx].state.flatten(),
-            self.episodes[idx].action.flatten(),
-            self.episodes[idx].action_log_prob.flatten(),
-            self.episodes[idx].reward,
-            self.episodes[idx].done,
-            self.episodes[idx].value,
-            self.norm_advantages[idx],
-            self.returns[idx],
+            self.episodes_aux[idx].state.flatten(),
+            self.episodes_aux[idx].returns,
+            self.episodes_aux[idx].old_value
         )
