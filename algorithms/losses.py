@@ -11,12 +11,11 @@ class ClipActorLoss(torch.nn.Module):
 
     def forward(
         self,
-        old_probs: torch.FloatTensor,
-        new_probs: torch.FloatTensor,
+        old_actions_log_probs: torch.FloatTensor,
+        new_actions_log_probs: torch.FloatTensor,
         advantages: torch.FloatTensor,
     ) -> torch.FloatTensor:
-
-        ratio = (new_probs - old_probs).exp()
+        ratio = (new_actions_log_probs - old_actions_log_probs).exp()
 
         surrogate_1 = ratio * advantages
         surrogate_2 = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages

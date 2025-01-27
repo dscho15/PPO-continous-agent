@@ -66,7 +66,7 @@ class ExperienceDataset(torch.utils.data.Dataset):
         self.episodes = []
         for episode in episodes:
             self.episodes.extend(episode)
-            
+
         self.advantages = []
         for advantage in advantages:
             self.advantages.extend(advantage)

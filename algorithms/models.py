@@ -27,7 +27,7 @@ class RSNorm(nn.Module):
         normalized_x = (x - mean) / var.sqrt().clamp(min=self.eps)
 
         if not self.training:
-            
+
             return normalized_x
 
         with torch.no_grad():
@@ -55,7 +55,7 @@ class SimBaLayer(nn.Module):
         in_features: int,
         exp_factor: int = 2,
         eps: float = 1e-5,
-        dropout: float = 0.,
+        dropout: float = 0.0,
     ):
         super(SimBaLayer, self).__init__()
 
