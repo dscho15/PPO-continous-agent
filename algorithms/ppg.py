@@ -7,11 +7,11 @@ import random
 import io
 
 from tqdm import tqdm
-from algorithms.dataset import Dataset
 from PIL import Image
 
 import numpy as np
 import os
+from torch.utils.data import Dataset
 
 from collections import namedtuple
 
@@ -20,24 +20,16 @@ Memory = namedtuple(
 )
 
 
-class ExperienceDataset(torch.utils.data.Dataset):
+class ExperienceDataset(Dataset):
     def __init__(
         self,
         advantages: list[list[float]],
         episodes: list[list[Memory]],
         epsilon: float = 1e-8,
     ):
-        self.episodes = []
-        for episode in episodes:
-            self.episodes += episode
-
-        self.advantages = []
-        for adv in advantages:
-            self.advantages += adv
-
-        self.gt_critic_values_ = []
-        for mem, adv in zip(self.episodes, self.advantages):
-            self.gt_critic_values_.append(mem.value + adv)
+        self.episodes = [episode for episode in episodes]
+        self.advantages = [advantage for advantage in advantages]
+        self.gt_critic_values = [mem.value + adv for mem, adv in zip(self.episodes, self.advantages)]
 
         self.normalized_advantages = (self.advantages - np.mean(self.advantages)) / (
             np.std(self.advantages) + epsilon
@@ -123,7 +115,6 @@ class PPG(object):
         for _ in range(random.randint(0, n_random_steps)):
 
             random_action = self.env.action_space.sample()
-
             state, _, _, _, _ = self.env.step(random_action)
 
         return state
