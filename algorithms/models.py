@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
 from torch.distributions import normal
 from einops import reduce
 
@@ -25,6 +27,7 @@ class RSNorm(nn.Module):
         normalized_x = (x - mean) / var.sqrt().clamp(min=self.eps)
 
         if not self.training:
+            
             return normalized_x
 
         with torch.no_grad():
@@ -42,7 +45,7 @@ class RSNorm(nn.Module):
 class ReluSquared(torch.nn.Module):
 
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-        return x.sign() * torch.nn.functional.relu(x) ** 2
+        return x.sign() * F.relu(x) ** 2
 
 
 class SimBaLayer(nn.Module):
@@ -52,7 +55,7 @@ class SimBaLayer(nn.Module):
         in_features: int,
         exp_factor: int = 2,
         eps: float = 1e-5,
-        dropout: float = 0.1,
+        dropout: float = 0.,
     ):
         super(SimBaLayer, self).__init__()
 
@@ -88,7 +91,7 @@ class Actor(nn.Module):
             *[SimBaLayer(in_features=h_dim * 2) for _ in range(n_layers)]
         )
 
-        self.layer_norm = nn.LayerNorm(h_dim * 2)
+        self.layer_norm = nn.RMSNorm(h_dim * 2)
 
         self.mu = nn.Sequential(
             nn.Linear(h_dim * 2, h_dim), ReluSquared(), nn.Linear(h_dim, self.n_actions)
@@ -130,7 +133,7 @@ class Critic(nn.Module):
             *[SimBaLayer(in_features=h_dim) for _ in range(n_layers)]
         )
 
-        self.layer_norm = nn.LayerNorm(h_dim)
+        self.layer_norm = nn.RMSNorm(h_dim)
 
         self.critic = nn.Sequential(
             nn.Linear(h_dim, h_dim), ReluSquared(), nn.Linear(h_dim, 1)

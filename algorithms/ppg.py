@@ -1,324 +1,259 @@
-import torch
 from algorithms.models import Actor, Critic
-
-import gymnasium as gym
-import random
-
-import io
-
-from tqdm import tqdm
-from PIL import Image
-
-import numpy as np
-import os
-from torch.utils.data import Dataset
-
-from collections import namedtuple
-
-Memory = namedtuple(
-    "Memory", ["observation", "action", "action_log_prob", "reward", "done", "value"]
+from algorithms.dataset import ExperienceDataset, Memory, create_dataloader
+from algorithms.utils import (
+    optimize_network,
+    to_torch_tensor,
+    get_gae_advantages,
+    get_cum_returns,
+)
+from algorithms.losses import (
+    ClipActorLoss,
+    EntropyActorLoss,
+    ClipCriticLoss,
+    SpectralEntropyLoss,
 )
 
+from collections import deque
+from torch.utils.data import Dataset
 
-class ExperienceDataset(Dataset):
-    def __init__(
-        self,
-        advantages: list[list[float]],
-        episodes: list[list[Memory]],
-        epsilon: float = 1e-8,
-    ):
-        self.episodes = [episode for episode in episodes]
-        self.advantages = [advantage for advantage in advantages]
-        self.gt_critic_values = [mem.value + adv for mem, adv in zip(self.episodes, self.advantages)]
+import gymnasium as gym
+import numpy as np
+import torch
 
-        self.normalized_advantages = (self.advantages - np.mean(self.advantages)) / (
-            np.std(self.advantages) + epsilon
-        )
+from tqdm import tqdm
+import torch
+from einops import reduce, einsum
 
-    def __len__(self):
-        return len(self.episodes)
 
-    def __getitem__(self, idx):
-        return (
-            self.episodes[idx].observation.flatten(),
-            self.episodes[idx].action.flatten(),
-            self.episodes[idx].action_log_prob.flatten(),
-            self.episodes[idx].reward,
-            self.episodes[idx].done,
-            self.episodes[idx].value,
-            self.normalized_advantages[idx],
-            self.gt_critic_values_[idx],
-        )
+def tuple_to_tensors_and_device(
+    batch: tuple[torch.FloatTensor], device
+) -> tuple[torch.FloatTensor]:
+    return [torch.tensor(b, dtype=torch.float32).to(device) for b in batch]
 
 
 class PPG(object):
 
     def __init__(
         self,
-        env: gym.Env = None,
+        dim_obs_space: int,
+        dim_action_space: int,
+        actor_kl_beta: float = 0.001,
+        clip_actor_grads: float = 0.5,
+        clip_critic_grads: float = 0.5,
+        clip_actor_eps: float = 0.2,
+        clip_critic_eps: float = 0.5,
+        device: str = "cuda:0",
+        gae_lambda: float = 0.95,
+        gamma: float = 0.99,
         lr_actor: float = 1e-4,
         lr_critic: float = 1e-4,
-        nf_rewards: float = 1,
-        clip_critic_grads: float = 0.5,
-        clip_actor_grads: float = 0.5,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        n_policy_epochs: int = 10,
-        n_critic_epochs: int = 10,
+        n_critic_epochs: int = 8,
+        n_policy_epochs: int = 4,
         n_trajectories: int = 1000,
-        timesteps_per_batch: int = 2500,
-        max_timesteps_per_episode: int = 1000,
-        clip_eps: float = 0.2,
-        batch_size: int = 64,
-        do_clip_reward: bool = False,
-        clip_reward_range: tuple[float, float] = (-10, 10),
     ):
-        self.env = env
-        self.observation_space = self.env.observation_space.shape[0]
-        self.action_space = self.env.action_space.shape[0]
+        self.observation_space = dim_obs_space
+        self.action_space = dim_action_space
 
-        # Actor and Critic networks
         self.actor = Actor(self.observation_space, self.action_space)
         self.critic = Critic(self.observation_space)
 
-        # Initialize optimizer
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), lr=lr_actor)
-        self.critic_optimizer = torch.optim.AdamW(
-            self.critic.parameters(), lr=lr_critic
-        )
+        self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), lr=lr_critic)
 
-        # Default values for hyperparameters, will need to change later.
-        self.batch_size = batch_size
+        self.clip_actor_loss = ClipActorLoss(clip_actor_eps)
+        self.entropy_actor_loss = EntropyActorLoss(actor_kl_beta)
+        self.clip_critic_loss = ClipCriticLoss(clip_critic_eps)
+        self.spec_entropy_actor_loss = SpectralEntropyLoss()
+        self.spec_entropy_critic_loss = SpectralEntropyLoss()
+
         self.clip_actor_grads = clip_actor_grads
         self.clip_critic_grads = clip_critic_grads
-        self.clip_eps = clip_eps
-
-        self.clip_reward_range = clip_reward_range
-        self.do_clip_reward = do_clip_reward
-
-        self.gamma = gamma
+        self.clip_eps = clip_actor_eps
+        self.device = device
         self.gae_lambda = gae_lambda
-        self.max_timesteps_per_episode = max_timesteps_per_episode
-        self.n_policy_epochs = n_policy_epochs
+        self.gamma = gamma
         self.n_critic_epochs = n_critic_epochs
+        self.n_policy_epochs = n_policy_epochs
         self.n_trajectories = n_trajectories
-        self.nf_rewards = nf_rewards
-        self.timesteps_per_batch = timesteps_per_batch
-        self.beta = 0.01
 
-        self.critic_loss = torch.nn.L1Loss()
+        self.actor.to(self.device)
+        self.critic.to(self.device)
 
-    def reset_env(self, n_random_steps: int = 1) -> torch.FloatTensor:
+    def mode(self, mode: str):
+        modes = {
+            "train": lambda: (self.actor.train(), self.critic.train()),
+            "eval": lambda: (self.actor.eval(), self.critic.eval()),
+        }
+        if mode in modes:
+            modes[mode]()
+        else:
+            raise ValueError(f"Invalid mode: {mode}. Use 'train' or 'eval'.")
 
-        state, _ = self.env.reset()
+    def learn(self, dataloader: torch.utils.data.DataLoader):
 
-        for _ in range(random.randint(0, n_random_steps)):
+        actor_losses = []
 
-            random_action = self.env.action_space.sample()
-            state, _, _, _, _ = self.env.step(random_action)
+        for _ in range(self.n_policy_epochs):
+            
+            loss = []
 
-        return state
+            for batch in dataloader:
 
-    def get_advantages(
-        self,
-        episode: list[Memory],
-    ) -> list[torch.FloatTensor]:
+                batch = tuple_to_tensors_and_device(batch, self.device)
 
-        prev_adv = 0
-        adv = torch.zeros(len(episode), dtype=torch.float32)
-        episode.append(
-            Memory(
-                observation=None,
-                action=None,
-                action_log_prob=None,
-                reward=None,
-                done=1,
-                value=0,
-            )
-        )
+                (
+                    states,
+                    actions,
+                    old_log_prob_actions,
+                    _,
+                    _,
+                    _,
+                    advantages,
+                    _,
+                ) = batch
 
-        for t in reversed(range(len(adv))):
-            delta_t = (
-                episode[t].reward
-                + self.gamma * (~episode[t].done) * episode[t + 1].value
-                - episode[t].value
-            ).item()
+                if advantages.shape != (self.batch_size, 1):
+                    advantages = advantages.unsqueeze(1)
 
-            adv[t] = delta_t + self.gamma * self.gae_lambda * prev_adv
+                dist, _ = self.actor(states)
 
-            prev_adv = adv[t]
+                new_log_prob_actions = dist.log_prob(actions)
 
-        episode.pop()
-        return adv
-
-    def get_cumulative_rewards(self, episode: list[Memory]) -> list[torch.FloatTensor]:
-
-        cumulative_rewards = torch.zeros(len(episode), dtype=torch.float32)
-        cumulative_rewards[-1] = episode[-1].reward
-
-        for t in reversed(range(len(cumulative_rewards) - 1)):
-            cumulative_rewards[t] = (
-                episode[t].reward + self.gamma * cumulative_rewards[t + 1]
-            )
-
-        return cumulative_rewards
-
-    def rollout(
-        self,
-    ) -> list[list[Memory]]:
-
-        t: int = 0
-        episodes: list[list[Memory]] = []
-
-        while t < self.timesteps_per_batch:
-
-            s = self.reset_env()
-            episode: list[Memory] = []
-
-            for _ in range(self.max_timesteps_per_episode):
-
-                with torch.inference_mode():
-
-                    s = torch.tensor(s, dtype=torch.float32)
-
-                    dist = self.actor(s)
-                    a = dist.sample()
-                    log_a = dist.log_prob(a)
-
-                    v = self.critic(s)
-
-                s_next, reward, terminated, truncated, info = self.env.step(
-                    a.numpy().flatten()
+                actor_loss = (
+                    self.clip_actor_loss(
+                        old_log_prob_actions, new_log_prob_actions, advantages
+                    )
+                    + self.spec_entropy_actor_loss(self.actor)
+                    + self.entropy_actor_loss(dist)
                 )
 
-                mem = Memory(
-                    observation=s,
-                    action=a,
-                    action_log_prob=log_a,
-                    reward=reward,
-                    done=terminated or truncated,
-                    value=v,
+                optimize_network(
+                    actor_loss,
+                    self.actor,
+                    self.actor_optimizer,
+                    self.clip_actor_grads,
                 )
-                episode.append(mem)
+                
+                loss.append(actor_loss.item())
+                
+            actor_losses.append(np.mean(loss))
+            
+        # Critic training
+            
+        critic_losses = []
 
-                s = s_next
-                t += 1
+        for _ in range(self.n_critic_epochs):
+            
+            loss = []
 
-                if t >= self.timesteps_per_batch or mem.done:
-                    break
+            for batch in dataloader:
 
-            episodes.append(episode)
+                batch = tuple_to_tensors_and_device(batch, self.device)
 
-        return episodes
+                (
+                    obs,
+                    _,
+                    _,
+                    _,
+                    _,
+                    old_values,
+                    _,
+                    returns,
+                ) = batch
 
-    def create_dataloader(
-        self, episodes: list[list[Memory]], advantages: list[torch.FloatTensor]
-    ) -> Dataset:
+                new_values = self.critic(obs)
 
-        dataset = ExperienceDataset(advantages, episodes)
+                critic_loss = self.clip_critic_loss(
+                    old_values, new_values, returns
+                ).mean()
+                critic_loss += self.spec_entropy_critic_loss(self.critic)
 
-        return torch.utils.data.DataLoader(
-            dataset, batch_size=self.batch_size, shuffle=True, drop_last=True
-        )
+                optimize_network(
+                    critic_loss,
+                    self.critic,
+                    self.critic_optimizer,
+                    self.clip_critic_grads,
+                )
+                
+                loss.append(critic_loss.item())
 
-    def train(self):
-
-        for traj in tqdm(range(self.n_trajectories), desc="Trajectories"):
-
-            episodes = self.rollout()
-
-            advantages = []
-            for episode in episodes:
-                advantages.append(self.get_advantages(episode))
-
-            disc_cum_rewards = []
-            for episode in episodes:
-                disc_cum_rewards.append(self.get_cumulative_rewards(episode))
-
-            dataloader = self.create_dataloader(episodes, advantages)
-
-            for policy_epoch in range(self.n_policy_epochs):
-
-                for batch in dataloader:
-
-                    (
-                        observations,
-                        actions,
-                        action_log_probs,
-                        rewards,
-                        dones,
-                        values,
-                        advantages,
-                        gt_critic_values,
-                    ) = batch
-
-                    if advantages.shape != (self.batch_size, 1):
-                        advantages = advantages.unsqueeze(1)
-
-                    self.actor_optimizer.zero_grad()
-
-                    dist = self.actor(observations)
-                    log_probs = dist.log_prob(actions)
-
-                    ratio = (log_probs - action_log_probs).exp()
-
-                    surrogate_1 = ratio * advantages
-                    surrogate_2 = (
-                        torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps)
-                        * advantages
-                    )
-
-                    actor_clip = -torch.min(surrogate_1, surrogate_2).mean()
-                    actor_entropy = dist.entropy().mean()
-
-                    actor_loss = actor_clip - self.beta * actor_entropy
-
-                    actor_loss.backward()
-
-                    torch.nn.utils.clip_grad_norm_(
-                        self.actor.parameters(), self.clip_actor_grads
-                    )
-
-                    self.actor_optimizer.step()
-
-            for critic_epoch in range(self.n_critic_epochs):
-
-                for batch in dataloader:
-
-                    (
-                        observations,
-                        actions,
-                        action_log_probs,
-                        rewards,
-                        dones,
-                        values,
-                        advantages,
-                        gt_critic_values,
-                    ) = batch
-
-                    self.critic_optimizer.zero_grad()
-
-                    critic_values = self.critic(observations)
-
-                    gt_critic_values = gt_critic_values.view_as(critic_values)
-
-                    critic_loss = self.critic_loss(
-                        critic_values, gt_critic_values
-                    ).mean()
-
-                    critic_loss.backward()
-
-                    torch.nn.utils.clip_grad_norm_(
-                        self.critic.parameters(), self.clip_critic_grads
-                    )
-
-                    self.critic_optimizer.step()
-
-            ...
+            critic_losses.append(np.mean(loss))
+            
+        return actor_losses, critic_losses
 
 
-if __name__ == "__main__":
+def training_loop(
+    gym: gym.Env,
+    agent: PPG,
+    n_max_que_size: int = 20,
+    n_training_loops: int = 1000,
+    n_max_number_of_steps: int = 1000,
+    n_steps_before_update: int = 5000,
+    seed: int = 42,
+    batch_size: int = 64,
+):
+    episodes = deque(maxlen=20)
+    n_steps = 1
+    
+    loop_iterator = tqdm(range(n_training_loops), desc="Training Loop", position=0)
 
-    ppg_agent = PPG(gym.make("LunarLanderContinuous-v3"))
+    for i in loop_iterator:
 
-    ppg_agent.train()
+        state, info = gym.reset(seed=seed)
+        episode = []
+        
+        for t in range(n_max_number_of_steps):
+
+            with torch.inference_mode():
+
+                state = to_torch_tensor(state, agent.device)
+
+                value = agent.critic(state)
+                                
+                dist, _ = agent.actor(state)
+
+                a = dist.sample()
+
+                log_a = dist.log_prob(a)
+
+            s_next, reward, terminated, truncated, _ = gym.step(
+                a.cpu().view(gym.action_space.shape).numpy()
+            )
+
+            n_steps += 1
+
+            done = terminated | truncated
+
+            mem = Memory(state, a, log_a, reward, done, value)
+            episode.append(mem)
+
+            state = s_next
+
+            if n_steps % n_steps_before_update == 0:
+                                
+                episodes_popped = [episodes.pop() for _ in range(len(episodes))]
+                episodes_popped = [e for e in episodes_popped if len(e) > 0]
+                
+                if len(episodes_popped) == 0:
+                    assert len(episodes) == 0, "Episodes should be empty"
+                    
+                advantages = [get_gae_advantages(e) for e in episodes_popped]
+                
+                mean_disc_cum_rewards = torch.tensor([torch.mean(get_cum_returns(e)) for e in episodes_popped]).mean()
+                
+                dataloader = create_dataloader(episodes_popped, advantages, batch_size)
+                
+                actor_losses, critic_losses = agent.learn(dataloader)
+                
+                loop_iterator.set_postfix(
+                    actor_loss=actor_losses[-1],
+                    critic_loss=critic_losses[-1],
+                    exp_return=mean_disc_cum_rewards.item(),
+                )
+                
+                episodes = []
+                
+            if done:
+                break
+
+        episodes.append(episode)

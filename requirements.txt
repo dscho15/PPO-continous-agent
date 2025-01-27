@@ -4,3 +4,6 @@ torch
 torchvision 
 torchaudio
 tqdm
+fire
+adam-atan2-pytorch
+ema-pytorch
