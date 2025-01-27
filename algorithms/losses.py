@@ -1,5 +1,5 @@
 import torch
-from torch.nn.functional import F
+import torch.nn.functional as F
 
 from einops import einsum
 

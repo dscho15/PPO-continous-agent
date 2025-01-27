@@ -31,17 +31,19 @@ import torch
 from einops import reduce, einsum
 
 def create_shuffled_dataloader(
-    episodes: list[list[Memory]] | list[MemoryAux],
-    batch_size: int,
+    episodes: list[Memory] | list[MemoryAux],
+    dataset_func: callable,
+    batch_size: int = 64,
+    dataset = None,
 ) -> torch.utils.data.DataLoader:
     
-    if isinstance(episodes[0, 0], Memory):
-        dataset = ExperienceDataset(episodes)
+    if dataset is None:
+        dataset_func = dataset_func(episodes)
     else:
-        dataset = ExperienceAuxDataset(episodes)
+        dataset_func = dataset
     
     return torch.utils.data.DataLoader(
-        dataset,
+        dataset_func,
         batch_size=batch_size,
         shuffle=True,
         drop_last=True
@@ -222,36 +224,48 @@ class PPG(object):
                 
                 c_loss.append(loss.item())
                 
-                self.episodes_aux.append(MemoryAux(states, returns, old_values))
+                episodes_aux.append(MemoryAux(states, returns, old_values))
 
             actor_losses.append(np.mean(a_loss))
             critic_losses.append(np.mean(c_loss))
 
         return actor_losses, critic_losses
     
-    def learn_aux(self, episodes_aux: list[Memory]):
-                
-        for mem in episodes_aux:
+    def learn_aux(self, dataloader: torch.utils.data.DataLoader):
+        
+        # for batch in dataloader:
             
-            state, action, log_prob_action, reward, done, value = mem
+        #     (states, returns, old_values, actions_log_prob) = batch
             
-            state = state.unsqueeze(0)
-            action = action.unsqueeze(0)
-            log_prob_action = log_prob_action.unsqueeze(0)
-            reward = reward.unsqueeze(0)
-            done = done.unsqueeze(0)
-            value = value.unsqueeze(0)
-            
-            advantages = get_gae_advantages(
-                reward,
-                done,
-                value,
-                self.gamma,
-                self.gae_lambda,
-            )
-            
-            returns = get_cum_returns
+        #     dist, values = self.actor(states)
 
+        #     new_actions_log_probs = dist.log_prob(states)
+            
+        #     loss = (
+        #         self.clip_critic_loss(old_values, values, returns)
+        #     )
+            
+        #     optimize_network(
+        #         loss,
+        #         self.actor,
+        #         self.opt_actor,
+        #         self.clip_actor_grads,
+        #     )
+            
+        #     critic_values = self.critic(states)
+            
+        #     loss = (
+        #         self.clip_critic_loss(old_values, critic_values, returns)
+        #     )
+            
+        #     optimize_network(
+        #         loss,
+        #         self.critic,
+        #         self.opt_critic,
+        #         self.clip_critic_grads,
+        #     )
+        
+        pass
 
 def training_loop(
     gym: gym.Env,
@@ -302,9 +316,12 @@ def training_loop(
 
                 episodes_unwrapped = [e for e in episodes]
                 episodes.clear()
+                
                 mean_disc_cum_rewards = [torch.mean(get_cum_returns(e)) for e in episodes_unwrapped]
                 mean_disc_cum_rewards = torch.tensor(mean_disc_cum_rewards).mean()
-                dataloader = create_shuffled_dataloader(episodes_unwrapped, batch_size)
+
+                dataloader = create_shuffled_dataloader(episodes_unwrapped, ExperienceDataset, batch_size)
+                
                 actor_losses, critic_losses = agent.learn(dataloader, episodes_aux)
 
                 loop_iterator.set_postfix(
@@ -318,11 +335,19 @@ def training_loop(
                                     
                 if divisible_by(num_policy_updates, 1):
                     
-                    create_shuffled_dataloader(episodes_aux, batch_size)
+                    dataset = ExperienceAuxDataset(episodes_aux)
                     
-                    agent.learn_aux(episodes_aux)
+                    dist, _ = agent.ema_actor.forward_eval(dataset.states)
                     
-                    episodes_aux.clear()
+                    actions_log_probs = dist.log_prob(dataset.states)
+                    
+                    dataset.action_log_probs = actions_log_probs
+                    
+                    dataloader = create_shuffled_dataloader(None, None, batch_size, dataset)
+                                        
+                    agent.learn_aux(dataloader)
+                    
+                episodes_aux.clear()
                     
             if done:
                 break
