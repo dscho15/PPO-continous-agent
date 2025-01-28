@@ -53,16 +53,16 @@ def get_gae_advantages(
     return advantages
 
 
-def get_cum_returns(episode: list[Memory], gamma: float = 0.95) -> torch.FloatTensor:
+def get_cum_returns_exact(episode: list[Memory], gamma: float = 0.95) -> torch.FloatTensor:
 
-    cum_rewards = torch.zeros(len(episode), dtype=torch.float32)
-    cum_rewards[-1] = to_torch_tensor(episode[-1].reward, cum_rewards.device)
+    returns = torch.zeros(len(episode), dtype=torch.float32)
+    returns[-1] = to_torch_tensor(episode[-1].reward, returns.device)
 
-    for t in reversed(range(len(cum_rewards) - 1)):
-        reward = to_torch_tensor(episode[t].reward, cum_rewards.device)
-        cum_rewards[t] = reward + gamma * cum_rewards[t + 1]
+    for t in reversed(range(len(returns) - 1)):
+        reward = to_torch_tensor(episode[t].reward, returns.device)
+        returns[t] = reward + gamma * returns[t + 1]
 
-    return cum_rewards
+    return returns
 
 
 def get_returns(values: list, advantages: list):

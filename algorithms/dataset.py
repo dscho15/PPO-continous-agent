@@ -11,7 +11,7 @@ Memory = namedtuple(
 )
 
 MemoryAux = namedtuple(
-    "MemoryAux", ["state", "actions", "value"]
+    "MemoryAux", ["state", "actions", "old_values", "returns"]
 )
 
 
@@ -53,13 +53,20 @@ class ExperienceAuxDataset(torch.utils.data.Dataset):
     def __init__(
         self, episodes_aux: list[MemoryAux], action_log_probs: torch.FloatTensor = None
     ):
-        self.episodes_aux = episodes_aux
-        (self.states, self.returns, self.old_values) = zip(*self.episodes_aux)
-
+        (self.states, self.actions, self.old_values, self.returns) = zip(*episodes_aux)
+        
         self.states = torch.stack(self.states)
         self.states = self.states.view((-1, self.states.shape[-1]))
-        self.returns = torch.stack(self.returns).view((-1, 1))
-        self.old_values = torch.stack(self.old_values).view((-1, 1))
+        
+        self.actions = torch.stack(self.actions)
+        self.actions = self.actions.view((-1, self.actions.shape[-1]))
+        
+        self.old_values = torch.stack(self.old_values)
+        self.old_values = self.old_values.view((-1, 1))
+
+        self.returns = torch.stack(self.returns)
+        self.returns = self.returns.view((-1, 1))
+        
         self.action_log_probs = action_log_probs
 
     def __len__(self):
@@ -68,6 +75,7 @@ class ExperienceAuxDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return (
             self.states[idx].flatten(),
+            self.actions[idx].flatten(),
             self.returns[idx].flatten(),
             self.old_values[idx].flatten(),
             self.action_log_probs[idx].flatten(),

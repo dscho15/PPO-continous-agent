@@ -28,19 +28,18 @@ class ClipActorLoss(torch.nn.Module):
 
 class EntropyActorLoss(torch.nn.Module):
 
-    def __init__(self, beta: float = 0.01):
+    def __init__(self, weight: float = 0.01):
 
         super(EntropyActorLoss, self).__init__()
-        self.beta = beta
+        self.weight = weight
 
     def forward(self, dist: torch.distributions) -> torch.FloatTensor:
-        return -self.beta * dist.entropy().mean()
+        return -self.weight * dist.entropy().mean()
 
 
 class ClipCriticLoss(torch.nn.Module):
 
     def __init__(self, eps: float = 0.4):
-
         super(ClipCriticLoss, self).__init__()
         self.eps = eps
 
@@ -55,21 +54,21 @@ class ClipCriticLoss(torch.nn.Module):
             -self.eps, self.eps
         )
 
-        value_loss_1 = (value_clipped.flatten() - returns) ** 2
-        value_loss_2 = (new_values.flatten() - returns) ** 2
+        surrogate_1 = (value_clipped - returns) ** 2
+        surrogate_2 = (new_values - returns) ** 2
 
-        return 0.5 * torch.mean(torch.max(value_loss_1, value_loss_2))
+        return 0.5 * torch.mean(torch.max(surrogate_1, surrogate_2))
 
 
 class SpectralEntropyLoss(torch.nn.Module):
 
-    def __init__(self, beta: float = 0.02, eps: float = 1e-16, update_very: int = 4):
+    def __init__(self, weight: float = 0.02, eps: float = 1e-16, update_very: int = 4):
 
         super(SpectralEntropyLoss, self).__init__()
 
         self.eps = eps
         self.update_rate = update_very
-        self.beta = beta
+        self.weight = weight
         self.t = 1
 
     def log(self, t: torch.FloatTensor) -> torch.FloatTensor:
@@ -107,7 +106,17 @@ class SpectralEntropyLoss(torch.nn.Module):
 
         self.t += 1
 
-        return self.beta * loss
+        return self.weight * loss
+
+class KLDivLoss(torch.nn.Module):
+    
+    def __init__(self, weight: float = 0.01):
+        
+        super(KLDivLoss, self).__init__()
+        self.weight = weight
+        
+    def forward(self, x, y) -> torch.FloatTensor:
+        return self.weight * torch.nn.functional.kl_div(x, y, reduction="batchmean").mean()
 
 
 def simba_orthogonal_loss(model: torch.nn.Module, simba_module: torch.nn.Module):
