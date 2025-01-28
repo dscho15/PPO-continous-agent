@@ -1,6 +1,6 @@
 import torch
-
 from collections import namedtuple
+from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
 
 Memory = namedtuple(
     "Memory", ["state", "action", "action_log_prob", "reward", "done", "value"]
@@ -53,7 +53,9 @@ def get_gae_advantages(
     return advantages
 
 
-def get_cum_returns_exact(episode: list[Memory], gamma: float = 0.95) -> torch.FloatTensor:
+def get_cum_returns_exact(
+    episode: list[Memory], gamma: float = 0.95
+) -> torch.FloatTensor:
 
     returns = torch.zeros(len(episode), dtype=torch.float32)
     returns[-1] = to_torch_tensor(episode[-1].reward, returns.device)
@@ -68,3 +70,14 @@ def get_cum_returns_exact(episode: list[Memory], gamma: float = 0.95) -> torch.F
 def get_returns(values: list, advantages: list):
     returns = [value + adv for value, adv in zip(values, advantages)]
     return to_torch_tensor(returns, "cpu").view(-1, 1)
+
+
+def convert_images_to_video(image_list, output_file, fps=30):
+    if not image_list:
+        raise ValueError("The image list is empty.")
+
+    # Create a video clip from the image list
+    clip = ImageSequenceClip(image_list, fps=fps)
+
+    # Write the video to the specified output file
+    clip.write_videofile(output_file, codec="libx264", audio=False)

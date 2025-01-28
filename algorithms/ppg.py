@@ -12,7 +12,7 @@ from algorithms.utils import (
     to_torch_tensor,
     get_gae_advantages,
     get_returns,
-    get_cum_returns_exact
+    get_cum_returns_exact,
 )
 
 from algorithms.losses import (
@@ -20,7 +20,7 @@ from algorithms.losses import (
     EntropyActorLoss,
     ClipCriticLoss,
     SpectralEntropyLoss,
-    KLDivLoss
+    KLDivLoss,
 )
 
 from ema_pytorch import EMA
@@ -64,7 +64,7 @@ def divisible_by(x: int, y: int) -> bool:
 
 
 def normalize(x: torch.FloatTensor) -> torch.FloatTensor:
-    return (x - x.mean()) / (x.std() + 1e-8)
+    return (x - x.mean()) / (x.std() + 1e-5)
 
 
 class PPG(object):
@@ -76,16 +76,16 @@ class PPG(object):
         actor_kl_beta: float = 0.001,
         cautious_factor: float = 0.01,
         clip_actor_eps: float = 0.2,
-        clip_actor_grads: float = 0.5,
-        clip_critic_eps: float = 0.5,
-        clip_critic_grads: float = 0.5,
+        clip_actor_grads: float = 1.0,
+        clip_critic_eps: float = 0.4,
+        clip_critic_grads: float = 1.0,
         device: str = "cuda:0",
         ema_decay: float = 0.90,
         gae_lambda: float = 0.95,
         gamma: float = 0.99,
         lr_actor: float = 1e-4,
         lr_critic: float = 1e-4,
-        n_epochs: int = 4,
+        n_epochs: int = 1,
         n_trajectories: int = 1000,
         regen_reg_rate: float = 1e-4,
         save_path: str = "./model.pth",
@@ -130,9 +130,9 @@ class PPG(object):
         self.entropy_actor_loss = EntropyActorLoss(actor_kl_beta)
         self.clip_critic_loss = ClipCriticLoss(clip_critic_eps)
 
-        self.spec_entropy_actor_loss = SpectralEntropyLoss(0.02)
-        self.spec_entropy_critic_loss = SpectralEntropyLoss(0.02)
-        self.kl_div_loss = KLDivLoss(0.5)
+        self.spec_entropy_actor_loss = SpectralEntropyLoss(0.1)
+        self.spec_entropy_critic_loss = SpectralEntropyLoss(0.1)
+        self.kl_div_loss = KLDivLoss(0.25)
 
         self.clip_actor_grads = clip_actor_grads
         self.clip_critic_grads = clip_critic_grads
@@ -190,18 +190,19 @@ class PPG(object):
                     advantages,
                     returns,
                 ) = batch
-                advantages = normalize(advantages).unsqueeze(1)
 
                 # Actor optimization
-                dist, _ = self.actor(states)
-                new_actions_log_probs = dist.log_prob(actions)
+                actor_dist, _ = self.actor(states)
+                new_actions_log_probs = actor_dist.log_prob(actions)
 
                 actor_loss = (
                     self.clip_actor_loss(
-                        old_actions_log_probs, new_actions_log_probs, advantages
+                        old_actions_log_probs, 
+                        new_actions_log_probs, 
+                        advantages
                     )
                     + self.spec_entropy_actor_loss(self.actor)
-                    + self.entropy_actor_loss(dist)
+                    + self.entropy_actor_loss(actor_dist)
                 )
                 update_network(
                     actor_loss, self.actor, self.opt_actor, self.clip_actor_grads
@@ -210,10 +211,9 @@ class PPG(object):
 
                 # Critic optimization
                 new_values = self.critic(states)
-                critic_loss = (
-                    self.clip_critic_loss(old_values, new_values, returns).mean() + 
-                    self.spec_entropy_critic_loss(self.critic)
-                )
+                critic_loss = self.clip_critic_loss(
+                    old_values, new_values, returns
+                ).mean() + self.spec_entropy_critic_loss(self.critic)
                 update_network(
                     critic_loss, self.critic, self.opt_critic, self.clip_critic_grads
                 )
@@ -229,8 +229,8 @@ class PPG(object):
         return actor_losses, critic_losses
 
     def learn_aux(self, dataloader: torch.utils.data.DataLoader):
-        
-        for n in range(self.n_epochs * 2):
+
+        for n in range(self.n_epochs * 6):
 
             for batch in dataloader:
 
@@ -238,22 +238,23 @@ class PPG(object):
 
                 actor_dist_new, policy_values = self.actor(states)
                 new_log_prob_action = actor_dist_new.log_prob(actions)
-                loss = (
-                    self.clip_critic_loss(old_values, policy_values, returns) 
-                    + self.kl_div_loss(new_log_prob_action, old_log_prob_action)
-                )
+                loss = self.clip_critic_loss(
+                    old_values, policy_values, returns
+                ) + self.kl_div_loss(new_log_prob_action, old_log_prob_action)
                 update_network(loss, self.actor, self.opt_actor, self.clip_actor_grads)
 
                 values = self.critic(states)
                 loss = self.clip_critic_loss(old_values, values, returns)
-                update_network(loss, self.critic, self.opt_critic, self.clip_critic_grads)
+                update_network(
+                    loss, self.critic, self.opt_critic, self.clip_critic_grads
+                )
 
 
 def training_loop(
     gym_env: gym.Env,
     agent: PPG,
     n_training_loops: int = 10000,
-    max_steps: int = 1000,
+    max_steps: int = 3000,
     steps_before_update: int = 5000,
     seed: int = 42,
     batch_size: int = 64,
@@ -267,14 +268,12 @@ def training_loop(
         state, info = gym_env.reset(seed=seed)
         episode = []
 
-        for t in range(max_steps):
+        while True:
 
             state_tensor = torch.from_numpy(state).float().to(agent.device)
-            
+
             with torch.inference_mode():
-            
                 critic_value = agent.ema_critic.forward_eval(state_tensor)
-                
                 actor_dist, _ = agent.ema_actor.forward_eval(state_tensor)
                 action = actor_dist.rsample()
                 log_prob_action = actor_dist.log_prob(action)
@@ -285,42 +284,47 @@ def training_loop(
             step_count += 1
             done = terminated | truncated
 
-            episode.append(Memory(state, action, log_prob_action, reward, done, critic_value))
+            episode.append(
+                Memory(state, action, log_prob_action, reward, done, critic_value)
+            )
             state = next_state
 
             if divisible_by(step_count, steps_before_update) and len(episodes) > 0:
 
-                mean_returns = torch.mean(torch.tensor([torch.mean(get_cum_returns_exact(e)) for e in episodes]))
-                
+                mean_returns = torch.mean(
+                    torch.tensor(
+                        [torch.mean(get_cum_returns_exact(e)) for e in episodes]
+                    )
+                )
+
                 dl = create_shuffled_dataloader(episodes, ExperienceDataset, batch_size)
-                
-                actor_loss, critic_loss = agent.learn(dl, aux_episodes)
-                
+
                 episodes.clear()
+
+                actor_loss, critic_loss = agent.learn(dl, aux_episodes)
 
                 tqdm.write(
                     f"Mean Actor Loss: {actor_loss[-1]},   \
-                      Mean Critic Loss: {critic_loss[-1]}, \
-                      Mean Returns: {mean_returns.item()}, \
-                      Mean Steps: {step_count}"
+                        Mean Critic Loss: {critic_loss[-1]}, \
+                        Mean Returns: {mean_returns.item()}, \
+                        Mean Steps: {step_count}"
                 )
-                
+
                 num_policy_updates += 1
 
-                if divisible_by(num_policy_updates, 4):
+                if divisible_by(num_policy_updates, 32):
 
                     dataset = ExperienceAuxDataset(aux_episodes)
 
                     actor_dist, _ = agent.ema_actor.forward_eval(dataset.states)
-                    
+
                     dataset.action_log_probs = actor_dist.log_prob(dataset.actions)
-                    
+
                     dl = create_shuffled_dataloader(None, None, batch_size, dataset)
-                    
-                    agent.learn_aux(dl)
-                    
+
                     aux_episodes.clear()
 
+                    agent.learn_aux(dl)
 
             # save the network every 10000 steps
             if divisible_by(step_count, steps_before_update * 4):

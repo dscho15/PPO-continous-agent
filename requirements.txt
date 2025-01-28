@@ -7,3 +7,4 @@ tqdm
 fire
 adam-atan2-pytorch
 ema-pytorch
+imageio[pyav]

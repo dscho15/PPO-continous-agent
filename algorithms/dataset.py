@@ -10,16 +10,20 @@ Memory = namedtuple(
     "Memory", ["state", "action", "action_log_prob", "reward", "done", "value"]
 )
 
-MemoryAux = namedtuple(
-    "MemoryAux", ["state", "actions", "old_values", "returns"]
-)
+MemoryAux = namedtuple("MemoryAux", ["state", "actions", "old_values", "returns"])
 
 
 class ExperienceDataset(torch.utils.data.Dataset):
     def __init__(self, episodes: list[list[Memory]]):
-        self.advantages, self.episodes = [], []
+
+        self.advantages, self.n_advantages, self.episodes = [], [], []
+
         for e in episodes:
-            self.advantages.extend(get_gae_advantages(e))
+            adv = get_gae_advantages(e)
+            self.advantages.extend(adv)
+            self.n_advantages.extend(
+                ((adv - torch.mean(adv)) / (torch.std(adv) + 1e-5)).view(-1).tolist()
+            )
             self.episodes.extend(e)
 
         (
@@ -44,7 +48,7 @@ class ExperienceDataset(torch.utils.data.Dataset):
             self.rewards[idx],
             self.done[idx],
             self.values[idx],
-            self.advantages[idx],
+            self.n_advantages[idx],
             self.returns[idx],
         )
 
@@ -54,19 +58,19 @@ class ExperienceAuxDataset(torch.utils.data.Dataset):
         self, episodes_aux: list[MemoryAux], action_log_probs: torch.FloatTensor = None
     ):
         (self.states, self.actions, self.old_values, self.returns) = zip(*episodes_aux)
-        
+
         self.states = torch.stack(self.states)
         self.states = self.states.view((-1, self.states.shape[-1]))
-        
+
         self.actions = torch.stack(self.actions)
         self.actions = self.actions.view((-1, self.actions.shape[-1]))
-        
+
         self.old_values = torch.stack(self.old_values)
         self.old_values = self.old_values.view((-1, 1))
 
         self.returns = torch.stack(self.returns)
         self.returns = self.returns.view((-1, 1))
-        
+
         self.action_log_probs = action_log_probs
 
     def __len__(self):

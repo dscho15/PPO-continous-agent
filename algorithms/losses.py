@@ -20,8 +20,8 @@ class ClipActorLoss(torch.nn.Module):
     ) -> torch.FloatTensor:
         ratio = (new_actions_log_probs - old_actions_log_probs).exp()
 
-        surrogate_1 = ratio * advantages
-        surrogate_2 = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages
+        surrogate_1 = ratio * advantages.unsqueeze(-1)
+        surrogate_2 = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages.unsqueeze(-1)
 
         return -torch.min(surrogate_1, surrogate_2).mean()
 
@@ -108,15 +108,18 @@ class SpectralEntropyLoss(torch.nn.Module):
 
         return self.weight * loss
 
+
 class KLDivLoss(torch.nn.Module):
-    
+
     def __init__(self, weight: float = 0.01):
-        
+
         super(KLDivLoss, self).__init__()
         self.weight = weight
-        
+
     def forward(self, x, y) -> torch.FloatTensor:
-        return self.weight * torch.nn.functional.kl_div(x, y, reduction="batchmean").mean()
+        return (
+            self.weight * torch.nn.functional.kl_div(x, y, reduction="batchmean").mean()
+        )
 
 
 def simba_orthogonal_loss(model: torch.nn.Module, simba_module: torch.nn.Module):
