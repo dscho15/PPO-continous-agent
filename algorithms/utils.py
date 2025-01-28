@@ -6,7 +6,8 @@ Memory = namedtuple(
     "Memory", ["state", "action", "action_log_prob", "reward", "done", "value"]
 )
 
-def optimize_network(
+
+def update_network(
     loss: torch.FloatTensor,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -38,10 +39,10 @@ def get_gae_advantages(
             value=0,
         )
     )
-    
-    states, actions, action_log_probs, rewards, dones, values = zip(*episodes)
+
+    _, _, _, rewards, dones, values = zip(*episodes)
     prev_advantage = 0
-    
+
     for t in reversed(range(len(advantages))):
         delta_t = (rewards[t] + gamma * (~dones[t]) * values[t + 1] - values[t]).item()
         advantages[t] = delta_t + gamma * gae_lambda * prev_advantage
@@ -62,3 +63,8 @@ def get_cum_returns(episode: list[Memory], gamma: float = 0.95) -> torch.FloatTe
         cum_rewards[t] = reward + gamma * cum_rewards[t + 1]
 
     return cum_rewards
+
+
+def get_returns(values: list, advantages: list):
+    returns = [value + adv for value, adv in zip(values, advantages)]
+    return to_torch_tensor(returns, "cpu").view(-1, 1)
