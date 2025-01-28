@@ -51,7 +51,7 @@ def get_gae_advantages(
         delta_t = (rewards[t] + gamma * next_value - values[t]).item()
         advantages[t] = delta_t + gamma * gae_lambda * prev_advantage
         prev_advantage = advantages[t]
-        
+
     episodes.pop()
 
     return advantages
@@ -85,6 +85,7 @@ def convert_images_to_video(image_list, output_file, fps=30):
 
     # Write the video to the specified output file
     clip.write_videofile(output_file, codec="libx264", audio=False)
+
 
 def set_seed(seed: int):
     torch.manual_seed(seed)

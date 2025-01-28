@@ -12,6 +12,7 @@ Memory = namedtuple(
 
 MemoryAux = namedtuple("MemoryAux", ["state", "actions", "old_values", "returns"])
 
+
 def normalize(x: torch.FloatTensor) -> torch.FloatTensor:
     return (x - x.mean()) / (x.std() + 1e-5)
 
@@ -25,7 +26,7 @@ class ExperienceDataset(torch.utils.data.Dataset):
             self.advantages.extend(adv)
             self.n_advantages.extend((normalize(adv)).view(-1).tolist())
             self.episodes.extend(e)
-        
+
         (
             self.states,
             self.actions,
@@ -36,7 +37,7 @@ class ExperienceDataset(torch.utils.data.Dataset):
         ) = zip(*self.episodes)
 
         self.returns = get_returns(self.values, self.advantages)
-        
+
     def __len__(self):
         return len(self.states)
 

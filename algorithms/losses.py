@@ -3,38 +3,47 @@ import torch.nn.functional as F
 
 from einops import einsum
 
+# Loss is from original PPO paper
+
 
 class ClipActorLoss(torch.nn.Module):
 
     def __init__(self, eps: float = 0.2):
-
         super(ClipActorLoss, self).__init__()
-
         self.eps = eps
 
     def forward(
         self,
-        old_actions_log_probs: torch.FloatTensor,
-        new_actions_log_probs: torch.FloatTensor,
+        old_log_prob_actions: torch.FloatTensor,
+        new_log_prob_actions: torch.FloatTensor,
         advantages: torch.FloatTensor,
     ) -> torch.FloatTensor:
-        ratio = (new_actions_log_probs - old_actions_log_probs).exp()
+        ratio = (new_log_prob_actions - old_log_prob_actions).exp()
 
-        surrogate_1 = ratio * advantages.unsqueeze(-1)
-        surrogate_2 = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages.unsqueeze(-1)
+        if advantages.ndim == 1:
+            advantages = advantages.unsqueeze(-1)
+
+        surrogate_1 = ratio * advantages
+        surrogate_2 = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages
 
         return -torch.min(surrogate_1, surrogate_2).mean()
 
 
+# Loss is from orginal PPO paper
+
+
 class EntropyActorLoss(torch.nn.Module):
 
-    def __init__(self, weight: float = 0.01):
+    def __init__(self, weight: float = 0.05):
 
         super(EntropyActorLoss, self).__init__()
         self.weight = weight
 
     def forward(self, dist: torch.distributions) -> torch.FloatTensor:
         return -self.weight * dist.entropy().mean()
+
+
+# This is somewhat weird loss, but it is from original PPO paper
 
 
 class ClipCriticLoss(torch.nn.Module):
@@ -51,14 +60,19 @@ class ClipCriticLoss(torch.nn.Module):
         returns: torch.FloatTensor,
     ) -> torch.FloatTensor:
 
+        # Clipping the value function
         value_clipped = old_values + (new_values - old_values).clamp(
             -self.eps, self.eps
         )
 
-        surrogate_1 = torch.abs(value_clipped - returns)
-        surrogate_2 = torch.abs(new_values - returns)
+        # Surrogate losses
+        surrogate_1 = self.loss(new_values, returns)
+        surrogate_2 = self.loss(value_clipped, returns)
 
         return torch.mean(torch.max(surrogate_1, surrogate_2))
+
+
+# Loss is from an open-review paper
 
 
 class SpectralEntropyLoss(torch.nn.Module):
@@ -110,6 +124,9 @@ class SpectralEntropyLoss(torch.nn.Module):
         return self.weight * loss
 
 
+# Loss is from PPG paper
+
+
 class KLDivLoss(torch.nn.Module):
 
     def __init__(self, weight: float = 0.01):
@@ -123,29 +140,31 @@ class KLDivLoss(torch.nn.Module):
         )
 
 
-def simba_orthogonal_loss(model: torch.nn.Module, simba_module: torch.nn.Module):
-    loss = torch.tensor(0.0).requires_grad_()
+# Copied from Lucidrains' SimBA implementation
 
-    for module in model.modules():
+# def simba_orthogonal_loss(model: torch.nn.Module, simba_module: torch.nn.Module):
+# loss = torch.tensor(0.0).requires_grad_()
 
-        if not isinstance(module, simba_module):
-            continue
+# for module in model.modules():
 
-        weights = []
+#     if not isinstance(module, simba_module):
+#         continue
 
-        for layer in module.layers:
-            linear_in, linear_out = layer.branch[1], layer.branch[3]
+#     weights = []
 
-            weights.append(linear_in.weight.t())
-            weights.append(linear_out.weight)
+#     for layer in module.layers:
+#         linear_in, linear_out = layer.branch[1], layer.branch[3]
 
-        for weight in weights:
-            norm_weight = F.normalize(weight, dim=-1)
-            cosine_dist = einsum(norm_weight, norm_weight, "i d, j d -> i j")
-            eye = torch.eye(
-                cosine_dist.shape[-1], device=cosine_dist.device, dtype=torch.bool
-            )
-            orthogonal_loss = cosine_dist[~eye].mean()
-            loss = loss + orthogonal_loss
+#         weights.append(linear_in.weight.t())
+#         weights.append(linear_out.weight)
 
-    return loss
+#     for weight in weights:
+#         norm_weight = F.normalize(weight, dim=-1)
+#         cosine_dist = einsum(norm_weight, norm_weight, "i d, j d -> i j")
+#         eye = torch.eye(
+#             cosine_dist.shape[-1], device=cosine_dist.device, dtype=torch.bool
+#         )
+#         orthogonal_loss = cosine_dist[~eye].mean()
+#         loss = loss + orthogonal_loss
+
+# return loss
