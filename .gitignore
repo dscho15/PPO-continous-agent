@@ -3,3 +3,4 @@ imgs/*
 __pycache__**
 __pycache__/*
 *.gif
+nohup.out

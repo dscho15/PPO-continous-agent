@@ -42,6 +42,7 @@ class ClipCriticLoss(torch.nn.Module):
     def __init__(self, eps: float = 0.4):
         super(ClipCriticLoss, self).__init__()
         self.eps = eps
+        self.loss = torch.nn.SmoothL1Loss()
 
     def forward(
         self,
@@ -54,10 +55,10 @@ class ClipCriticLoss(torch.nn.Module):
             -self.eps, self.eps
         )
 
-        surrogate_1 = (value_clipped - returns) ** 2
-        surrogate_2 = (new_values - returns) ** 2
+        surrogate_1 = torch.abs(value_clipped - returns)
+        surrogate_2 = torch.abs(new_values - returns)
 
-        return 0.5 * torch.mean(torch.max(surrogate_1, surrogate_2))
+        return torch.mean(torch.max(surrogate_1, surrogate_2))
 
 
 class SpectralEntropyLoss(torch.nn.Module):

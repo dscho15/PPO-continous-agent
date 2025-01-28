@@ -15,7 +15,7 @@ class RSNorm(nn.Module):
         self.register_buffer("t", torch.tensor(1.0))
         self.register_buffer("running_mean", torch.zeros(dim))
         self.register_buffer("running_var", torch.ones(dim))
-
+        
         self.eps = eps
 
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
@@ -25,27 +25,23 @@ class RSNorm(nn.Module):
         var = self.running_var
 
         normalized_x = (x - mean) / var.sqrt().clamp(min=self.eps)
-
+        
         if not self.training:
-
             return normalized_x
+        
+        # ensure bsz is greater than 1
+        if x.shape[0] > 1:
+            
+            with torch.no_grad():
 
-        with torch.no_grad():
+                new_obs_mean = reduce(x, "... c -> c", "mean")
+                delta = new_obs_mean - mean
 
-            new_obs_mean = reduce(x, "... c -> c", "mean")
-            delta = new_obs_mean - mean
-
-            self.t += 1
-            self.running_mean = mean + delta / time
-            self.running_var = (time - 1) / time * (var + 1 / time * delta**2)
-
+                self.t += 1
+                self.running_mean = mean + delta / time
+                self.running_var = (time - 1) / time * (var + 1 / time * delta**2)
+                        
         return normalized_x
-
-
-class ReluSquared(torch.nn.Module):
-
-    def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-        return x.sign() * F.relu(x) ** 2
 
 
 class SimBaLayer(nn.Module):
@@ -53,18 +49,16 @@ class SimBaLayer(nn.Module):
     def __init__(
         self,
         in_features: int,
-        exp_factor: int = 2,
-        eps: float = 1e-5,
-        dropout: float = 0.0,
+        exp_factor: int = 1,
+        eps: float = 1e-5
     ):
         super(SimBaLayer, self).__init__()
 
         self.model = nn.Sequential(
             nn.RMSNorm(in_features, eps=eps),
             nn.Linear(in_features, in_features * exp_factor),
-            ReluSquared(),
-            nn.Linear(in_features * exp_factor, in_features),
-            nn.Dropout(dropout),
+            nn.SiLU(),
+            nn.Linear(in_features * exp_factor, in_features)
         )
 
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
@@ -83,7 +77,7 @@ class Actor(nn.Module):
         self.n_actions = n_actions
 
         self.pre_layers = nn.Sequential(
-            RSNorm(n_states),
+            # RSNorm(n_states),
             nn.Linear(n_states, h_dim * 2),
         )
 
@@ -94,25 +88,33 @@ class Actor(nn.Module):
         self.layer_norm = nn.RMSNorm(h_dim * 2)
 
         self.mu = nn.Sequential(
-            nn.Linear(h_dim * 2, h_dim), ReluSquared(), nn.Linear(h_dim, self.n_actions)
+            nn.Linear(h_dim * 2, h_dim), nn.SiLU(), nn.Linear(h_dim, self.n_actions)
         )
-        self.log_std = nn.Parameter(torch.zeros(n_actions))
+        
+        self.log_std = nn.Parameter(torch.zeros(n_actions), requires_grad=True)
 
         self.critic = nn.Sequential(
-            nn.Linear(h_dim * 2, h_dim), ReluSquared(), nn.Linear(h_dim, 1)
+            nn.Linear(h_dim * 2, h_dim), nn.SiLU(), nn.Linear(h_dim, 1)
         )
+                
+        for layer in self.pre_layers:
+            if isinstance(layer, nn.Linear):
+                nn.init.orthogonal_(layer.weight)
 
     def forward(self, x: torch.FloatTensor) -> tuple[normal.Normal, torch.FloatTensor]:
+        
+        if x.ndim != 2:
+            x = x.reshape(-1, self.n_states)
 
         x = self.pre_layers(x)
         x = self.simba_layers(x)
         x = self.layer_norm(x)
 
         v = self.critic(x)
-
+        
         mu = self.mu(x)
         dist = normal.Normal(mu, self.log_std.exp())
-
+                                
         return dist, v
 
 
@@ -125,7 +127,7 @@ class Critic(nn.Module):
         self.n_states = n_states
 
         self.pre_layers = nn.Sequential(
-            RSNorm(n_states),
+            # RSNorm(n_states),
             nn.Linear(n_states, h_dim),
         )
 
@@ -136,28 +138,22 @@ class Critic(nn.Module):
         self.layer_norm = nn.RMSNorm(h_dim)
 
         self.critic = nn.Sequential(
-            nn.Linear(h_dim, h_dim), ReluSquared(), nn.Linear(h_dim, 1)
+            nn.Linear(h_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, 1)
         )
+        
+        # init all linear layers as orthogonal
+        for layer in self.pre_layers:
+            if isinstance(layer, nn.Linear):
+                nn.init.orthogonal_(layer.weight)
 
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-
+        
+        if x.ndim != 2:
+            x = x.reshape(-1, self.n_states)
+        
         x = self.pre_layers(x)
         x = self.simba_layers(x)
         x = self.layer_norm(x)
 
         v = self.critic(x)
-
         return v
-
-
-# # test
-actor = Actor(4, 2)
-critic = Critic(4)
-
-observations = torch.randn(32, 4)
-
-dist, values = actor(observations)
-dist
-values.shape
-values = critic(observations)
-values.shape

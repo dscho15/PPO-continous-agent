@@ -1,4 +1,7 @@
 import torch
+import numpy as np
+import random
+
 from collections import namedtuple
 from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
 
@@ -25,7 +28,7 @@ def to_torch_tensor(x, device, dtype=torch.float32):
 
 
 def get_gae_advantages(
-    episodes: list[Memory], gamma: float = 0.99, gae_lambda: float = 0.95
+    episodes: list[Memory], gamma: float = 0.95, gae_lambda: float = 0.95
 ) -> list[torch.FloatTensor]:
     advantages = torch.zeros(len(episodes), dtype=torch.float32)
 
@@ -40,14 +43,15 @@ def get_gae_advantages(
         )
     )
 
-    _, _, _, rewards, dones, values = zip(*episodes)
+    _, _, _, rewards, done, values = zip(*episodes)
     prev_advantage = 0
 
     for t in reversed(range(len(advantages))):
-        delta_t = (rewards[t] + gamma * (~dones[t]) * values[t + 1] - values[t]).item()
+        next_value = 0 if done[t] else values[t + 1]
+        delta_t = (rewards[t] + gamma * next_value - values[t]).item()
         advantages[t] = delta_t + gamma * gae_lambda * prev_advantage
         prev_advantage = advantages[t]
-
+        
     episodes.pop()
 
     return advantages
@@ -81,3 +85,11 @@ def convert_images_to_video(image_list, output_file, fps=30):
 
     # Write the video to the specified output file
     clip.write_videofile(output_file, codec="libx264", audio=False)
+
+def set_seed(seed: int):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    return seed

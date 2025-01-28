@@ -23,7 +23,7 @@ from algorithms.losses import (
     KLDivLoss,
 )
 
-from ema_pytorch import EMA
+from algorithms.ema import EMA
 from adam_atan2_pytorch.adopt_atan2 import AdoptAtan2
 
 from collections import deque
@@ -73,8 +73,7 @@ class PPG(object):
         self,
         dim_action_space: int,
         dim_obs_space: int,
-        actor_kl_beta: float = 0.001,
-        cautious_factor: float = 0.01,
+        actor_kl_beta: float = 0.01,
         clip_actor_eps: float = 0.2,
         clip_actor_grads: float = 1.0,
         clip_critic_eps: float = 0.4,
@@ -85,46 +84,22 @@ class PPG(object):
         gamma: float = 0.99,
         lr_actor: float = 1e-4,
         lr_critic: float = 1e-4,
-        n_epochs: int = 1,
+        n_epochs: int = 4,
         n_trajectories: int = 1000,
-        regen_reg_rate: float = 1e-4,
         save_path: str = "./model.pth",
     ):
         self.observation_space = dim_obs_space
         self.action_space = dim_action_space
         self.save_path = save_path
 
-        self.actor = Actor(self.observation_space, self.action_space).to(device)
-        self.critic = Critic(self.observation_space).to(device)
+        self.actor = Actor(self.observation_space, self.action_space, n_layers=2, h_dim=32).to(device)
+        self.critic = Critic(self.observation_space, n_layers = 6).to(device)
 
-        self.ema_actor = EMA(
-            self.actor,
-            beta=ema_decay,
-            include_online_model=False,
-            update_model_with_ema_every=1000,
-        )
-        self.ema_critic = EMA(
-            self.critic,
-            beta=ema_decay,
-            include_online_model=False,
-            update_model_with_ema_every=1000,
-        )
-
-        self.opt_actor = AdoptAtan2(
-            self.actor.parameters(),
-            lr=lr_actor,
-            cautious_factor=cautious_factor,
-            regen_reg_rate=regen_reg_rate,
-        )
-        self.opt_critic = AdoptAtan2(
-            self.critic.parameters(),
-            lr=lr_critic,
-            cautious_factor=cautious_factor,
-            regen_reg_rate=regen_reg_rate,
-        )
-
-        self.ema_actor.add_to_optimizer_post_step_hook(self.opt_actor)
-        self.ema_critic.add_to_optimizer_post_step_hook(self.opt_critic)
+        self.opt_actor = torch.optim.AdamW(lr=lr_actor, params=self.actor.parameters())
+        self.opt_critic = torch.optim.AdamW(lr=lr_critic, params=self.critic.parameters())
+        
+        # self.ema_actor = EMA(self.actor, decay=ema_decay, n_states=self.observation_space, n_actions=self.action_space)
+        # self.ema_critic = EMA(self.critic, decay=ema_decay, n_states=self.observation_space)
 
         self.clip_actor_loss = ClipActorLoss(clip_actor_eps)
         self.entropy_actor_loss = EntropyActorLoss(actor_kl_beta)
@@ -174,6 +149,7 @@ class PPG(object):
         actor_losses, critic_losses = [], []
 
         for _ in range(self.n_epochs):
+            
             epoch_actor_loss, epoch_critic_loss = [], []
 
             for batch in dataloader:
@@ -184,14 +160,13 @@ class PPG(object):
                     states,
                     actions,
                     old_actions_log_probs,
-                    rewards,
+                    _,
                     _,
                     old_values,
                     advantages,
                     returns,
                 ) = batch
 
-                # Actor optimization
                 actor_dist, _ = self.actor(states)
                 new_actions_log_probs = actor_dist.log_prob(actions)
 
@@ -204,25 +179,32 @@ class PPG(object):
                     + self.spec_entropy_actor_loss(self.actor)
                     + self.entropy_actor_loss(actor_dist)
                 )
+                
                 update_network(
                     actor_loss, self.actor, self.opt_actor, self.clip_actor_grads
                 )
+                
                 epoch_actor_loss.append(actor_loss.item())
+                
+                # self.ema_actor.update()
 
-                # Critic optimization
                 new_values = self.critic(states)
-                critic_loss = self.clip_critic_loss(
-                    old_values, new_values, returns
-                ).mean() + self.spec_entropy_critic_loss(self.critic)
+                
+                critic_loss = (
+                    self.clip_critic_loss(old_values, new_values, returns).mean()
+                    + self.spec_entropy_critic_loss(self.critic)
+                )
+                
                 update_network(
                     critic_loss, self.critic, self.opt_critic, self.clip_critic_grads
                 )
+                
                 epoch_critic_loss.append(critic_loss.item())
+                
+                # self.ema_critic.update()
 
-                # Store auxiliary data
                 episodes_aux.append(MemoryAux(states, actions, old_values, returns))
 
-            # Record epoch losses
             actor_losses.append(np.mean(epoch_actor_loss))
             critic_losses.append(np.mean(epoch_critic_loss))
 
@@ -238,16 +220,22 @@ class PPG(object):
 
                 actor_dist_new, policy_values = self.actor(states)
                 new_log_prob_action = actor_dist_new.log_prob(actions)
-                loss = self.clip_critic_loss(
-                    old_values, policy_values, returns
-                ) + self.kl_div_loss(new_log_prob_action, old_log_prob_action)
+                
+                loss = self.clip_critic_loss(old_values, policy_values, returns) + self.kl_div_loss(new_log_prob_action, old_log_prob_action)
+                
                 update_network(loss, self.actor, self.opt_actor, self.clip_actor_grads)
+                
+                self.ema_actor.update()
 
                 values = self.critic(states)
+                
                 loss = self.clip_critic_loss(old_values, values, returns)
+                
                 update_network(
                     loss, self.critic, self.opt_critic, self.clip_critic_grads
                 )
+                
+                self.ema_critic.update()
 
 
 def training_loop(
@@ -265,7 +253,9 @@ def training_loop(
     num_policy_updates = 0
 
     for i in tqdm(range(n_training_loops), desc="Training Loop", position=0):
+        
         state, info = gym_env.reset(seed=seed)
+        
         episode = []
 
         while True:
@@ -273,20 +263,27 @@ def training_loop(
             state_tensor = torch.from_numpy(state).float().to(agent.device)
 
             with torch.inference_mode():
-                critic_value = agent.ema_critic.forward_eval(state_tensor)
-                actor_dist, _ = agent.ema_actor.forward_eval(state_tensor)
+                
+                critic_value = agent.critic(state_tensor)
+                
+                actor_dist, _ = agent.actor(state_tensor)
+                
                 action = actor_dist.rsample()
+                
                 log_prob_action = actor_dist.log_prob(action)
 
             action_np = action.cpu().view(gym_env.action_space.shape).numpy()
+            
             next_state, reward, terminated, truncated, _ = gym_env.step(action_np)
 
             step_count += 1
+            
             done = terminated | truncated
 
             episode.append(
-                Memory(state, action, log_prob_action, reward, done, critic_value)
+                Memory(state, action, log_prob_action, reward / 10, done, critic_value)
             )
+            
             state = next_state
 
             if divisible_by(step_count, steps_before_update) and len(episodes) > 0:
@@ -312,22 +309,24 @@ def training_loop(
 
                 num_policy_updates += 1
 
-                if divisible_by(num_policy_updates, 32):
+                if divisible_by(num_policy_updates, 16):
 
-                    dataset = ExperienceAuxDataset(aux_episodes)
+                    # dataset = ExperienceAuxDataset(aux_episodes)
 
-                    actor_dist, _ = agent.ema_actor.forward_eval(dataset.states)
+                    # with torch.inference_mode():
+                        
+                    #     actor_dist, _ = agent.ema_actor.forward(dataset.states)
+                        
+                    #     dataset.action_log_probs = actor_dist.log_prob(dataset.actions)
 
-                    dataset.action_log_probs = actor_dist.log_prob(dataset.actions)
-
-                    dl = create_shuffled_dataloader(None, None, batch_size, dataset)
+                    # dl = create_shuffled_dataloader(None, None, batch_size, dataset)
 
                     aux_episodes.clear()
 
-                    agent.learn_aux(dl)
+                    # agent.learn_aux(dl)
 
             # save the network every 10000 steps
-            if divisible_by(step_count, steps_before_update * 4):
+            if divisible_by(step_count, steps_before_update):
                 agent.save()
 
             if done:

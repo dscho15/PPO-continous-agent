@@ -8,7 +8,6 @@ import random
 
 import gymnasium as gym
 
-
 seed = 42
 torch.manual_seed(42)
 np.random.seed(42)
@@ -34,12 +33,12 @@ while True:
     
     with torch.inference_mode():
     
-        critic_value = agent.ema_critic.forward_eval(state_tensor)
-        actor_dist, _ = agent.ema_actor.forward_eval(state_tensor)
-        action = actor_dist.mean
-        log_prob_action = actor_dist.log_prob(action)
+        critic_value = agent.critic.forward(state_tensor)
 
-    action_np = action.cpu().view(gym_env.action_space.shape).numpy()
+        actor_dist, _ = agent.actor.forward(state_tensor)
+                        
+    action_np = actor_dist.mean.cpu().view(gym_env.action_space.shape).numpy()
+    
     next_state, reward, terminated, truncated, _ = gym_env.step(action_np)
 
     done = terminated | truncated
