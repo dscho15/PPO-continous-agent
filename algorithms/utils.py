@@ -9,6 +9,12 @@ Memory = namedtuple(
     "Memory", ["state", "action", "action_log_prob", "reward", "done", "value"]
 )
 
+MemoryAux = namedtuple("MemoryAux", ["state", "actions", "old_values", "returns"])
+
+
+def normalize(x: torch.FloatTensor) -> torch.FloatTensor:
+    return (x - x.mean()) / (x.std() + 1e-5)
+
 
 def update_network(
     loss: torch.FloatTensor,
@@ -91,6 +97,7 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     return seed

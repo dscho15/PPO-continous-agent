@@ -13,10 +13,10 @@ torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
 
-gym_env = gym.make("BipedalWalker-v3", render_mode="rgb_array")
+gym_env = gym.make('Ant-v5', render_mode="rgb_array")
 
 agent = PPG(
-    gym_env.action_space.shape[0], gym_env.observation_space.shape[0]
+    gym_env.action_space.shape[0], gym_env.observation_space.shape[0], device="cuda:1"
 )
 
 agent.load("./model.pth")
@@ -28,21 +28,16 @@ image_sequence = []
 while True:
     
     image_sequence.append(gym_env.render())
-
     state_tensor = torch.from_numpy(state).float().to(agent.device)
     
     with torch.inference_mode():
-    
         critic_value = agent.critic.forward(state_tensor)
-
         actor_dist, _ = agent.actor.forward(state_tensor)
+        # sample
                         
-    action_np = actor_dist.mean.cpu().view(gym_env.action_space.shape).numpy()
-    
+    action_np = actor_dist.sample().cpu().view(gym_env.action_space.shape).numpy()
     next_state, reward, terminated, truncated, _ = gym_env.step(action_np)
-
     done = terminated | truncated
-
     state = next_state
     
     if done:
